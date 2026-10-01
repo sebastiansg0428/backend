@@ -59,7 +59,8 @@ app.post('/api/radicados', upload.single('archivo'), async (req, res) => {
             remitente_email,
             numero_folios,
             dependencia_destino,
-            asunto_documento
+            asunto_documento,
+            usuario_recibe
         } = req.body;
 
         // Validación obligatoria para evitar errores de base de datos
@@ -79,12 +80,9 @@ app.post('/api/radicados', upload.single('archivo'), async (req, res) => {
 
         // Query SQL con valores protegidos (Sanitizados contra SQL Injection)
         const query = `
-            INSERT INTO radicados (
-                numero_radicado, tipo_recepcion, tipo_documento, remitente_nombre, 
-                remitente_documento, remitente_entidad, remitente_nit, remitente_telefono, 
-                remitente_email, numero_folios, dependencia_destino, asunto_documento, 
-                nombre_archivo_original, ruta_archivo
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO radicados 
+            (numero_radicado, tipo_recepcion, tipo_documento, remitente_nombre, remitente_documento, remitente_entidad, remitente_nit, remitente_telefono, remitente_email, numero_folios, dependencia_destino, asunto_documento, usuario_recibe, nombre_archivo_original, ruta_archivo) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `;
 
         const values = [
@@ -100,6 +98,7 @@ app.post('/api/radicados', upload.single('archivo'), async (req, res) => {
             numero_folios || 1,
             dependencia_destino || 'General',
             asunto_documento,
+            usuario_recibe,
             nombreArchivoOriginal,
             rutaArchivo
         ];

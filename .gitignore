@@ -1,0 +1,12 @@
+# Dependencias de Node
+node_modules/
+
+# Archivos subidos por los usuarios (PDFs)
+uploads/
+
+# Archivos de entorno y credenciales
+.env
+
+# Configuraciones del editor de código
+.vscode/
+.DS_Store

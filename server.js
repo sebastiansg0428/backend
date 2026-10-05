@@ -49,6 +49,7 @@ app.post('/api/radicados', upload.single('archivo'), async (req, res) => {
 
         // Extracción limpia de los campos del formulario
         const {
+            tipo_comunicacion,
             tipo_recepcion,
             tipo_documento,
             remitente_nombre,
@@ -81,13 +82,17 @@ app.post('/api/radicados', upload.single('archivo'), async (req, res) => {
         // Query SQL con valores protegidos (Sanitizados contra SQL Injection)
         const query = `
             INSERT INTO radicados 
-            (numero_radicado, tipo_recepcion, tipo_documento, remitente_nombre, remitente_documento, remitente_entidad, remitente_nit, remitente_telefono, remitente_email, numero_folios, dependencia_destino, asunto_documento, usuario_recibe, nombre_archivo_original, ruta_archivo) 
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (numero_radicado, tipo_recepcion, tipo_comunicacion, tipo_documento, remitente_nombre, remitente_documento, remitente_entidad, remitente_nit, remitente_telefono, remitente_email, numero_folios, dependencia_destino, asunto_documento, usuario_recibe, nombre_archivo_original, ruta_archivo) 
+            VALUES (?, ?, ?, ?,
+                    ?, ?, ?, ?,
+                    ?, ?, ?, ?,
+                    ?, ?, ?, ?)
         `;
 
         const values = [
             numeroRadicado,
             tipo_recepcion || 'Digital',
+            tipo_comunicacion,
             tipo_documento || 'Solicitud',
             remitente_nombre,
             remitente_documento,

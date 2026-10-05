@@ -151,6 +151,23 @@ app.get('/api/radicados', async (req, res) => {
 });
 
 
+// Ruta para actualizar el estado de un radicado
+app.put('/api/radicados/:numero_radicado/estado', async (req, res) => {
+    const { numero_radicado } = req.params;
+    const { estado } = req.body;
+
+    try {
+        const query = 'UPDATE radicados SET estado = ? WHERE numero_radicado = ?';
+        // Ajusta 'db' o 'conexion' según cómo hayas nombrado tu conexión a MySQL
+        await pool.execute(query, [estado, numero_radicado]);
+
+        res.json({ success: true, message: 'Estado actualizado correctamente' });
+    } catch (error) {
+        console.error('Error al actualizar el estado:', error);
+        res.status(500).json({ success: false, message: 'Error en el servidor al actualizar' });
+    }
+});
+
 // Iniciar servidor
 app.listen(PORT, () => {
     console.log(`🚀 Servidor backend corriendo en http://localhost:${PORT}`);

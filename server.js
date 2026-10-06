@@ -4,6 +4,8 @@ const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
 const pool = require('./db');
+const calcularSemaforoBackend = require('./semaforo');
+const { obtenerTiempoRespuesta } = require('./plazos');
 
 const app = express();
 const PORT = 3000;
@@ -80,10 +82,11 @@ app.post('/api/radicados', upload.single('archivo'), async (req, res) => {
         const rutaArchivo = req.file.filename;
 
         // Query SQL con valores protegidos (Sanitizados contra SQL Injection)
+        const tiempoRespuesta = obtenerTiempoRespuesta(tipo_documento || 'Solicitud');
         const query = `
             INSERT INTO radicados 
-            (numero_radicado, tipo_recepcion, tipo_comunicacion, tipo_documento, remitente_nombre, remitente_documento, remitente_entidad, remitente_nit, remitente_telefono, remitente_email, numero_folios, dependencia_destino, asunto_documento, usuario_recibe, nombre_archivo_original, ruta_archivo) 
-            VALUES (?, ?, ?, ?,
+            (numero_radicado, tipo_recepcion, tipo_comunicacion, tipo_documento, tiempo_de_respuesta, remitente_nombre, remitente_documento, remitente_entidad, remitente_nit, remitente_telefono, remitente_email, numero_folios, dependencia_destino, asunto_documento, usuario_recibe, nombre_archivo_original, ruta_archivo)
+            VALUES (?, ?, ?, ?, ?,
                     ?, ?, ?, ?,
                     ?, ?, ?, ?,
                     ?, ?, ?, ?)
@@ -94,6 +97,7 @@ app.post('/api/radicados', upload.single('archivo'), async (req, res) => {
             tipo_recepcion || 'Digital',
             tipo_comunicacion,
             tipo_documento || 'Solicitud',
+            tiempoRespuesta,
             remitente_nombre,
             remitente_documento,
             remitente_entidad || null,
@@ -134,7 +138,7 @@ app.post('/api/radicados', upload.single('archivo'), async (req, res) => {
 });
 
 
-// Ruta para obtener todos los radicados registrados
+// Ruta para obtener los radicados con el semáforo calculado
 app.get('/api/radicados', async (req, res) => {
     try {
         const [rows] = await pool.query(
@@ -144,7 +148,17 @@ app.get('/api/radicados', async (req, res) => {
         res.status(200).json({
             success: true,
             total: rows.length,
-            radicados: rows
+            radicados: rows.map(radicado => {
+                const radicadoConPlazo = {
+                    ...radicado,
+                    tiempo_de_respuesta: obtenerTiempoRespuesta(radicado.tipo_documento)
+                };
+
+                return {
+                    ...radicadoConPlazo,
+                    semaforo: calcularSemaforoBackend(radicadoConPlazo)
+                };
+            })
         });
     } catch (error) {
         console.error("❌ Error al consultar radicados:", error);
@@ -161,12 +175,40 @@ app.put('/api/radicados/:numero_radicado/estado', async (req, res) => {
     const { numero_radicado } = req.params;
     const { estado } = req.body;
 
+    if (typeof estado !== 'string' || !estado.trim()) {
+        return res.status(400).json({
+            success: false,
+            message: 'El estado es obligatorio.'
+        });
+    }
+
     try {
         const query = 'UPDATE radicados SET estado = ? WHERE numero_radicado = ?';
-        // Ajusta 'db' o 'conexion' según cómo hayas nombrado tu conexión a MySQL
-        await pool.execute(query, [estado, numero_radicado]);
+        await pool.execute(query, [estado.trim(), numero_radicado]);
 
-        res.json({ success: true, message: 'Estado actualizado correctamente' });
+        const [rows] = await pool.execute(
+            'SELECT * FROM radicados WHERE numero_radicado = ? LIMIT 1',
+            [numero_radicado]
+        );
+
+        if (rows.length === 0) {
+            return res.status(404).json({
+                success: false,
+                message: 'No se encontró el radicado solicitado.'
+            });
+        }
+
+        const radicadoActualizado = {
+            ...rows[0],
+            tiempo_de_respuesta: obtenerTiempoRespuesta(rows[0].tipo_documento)
+        };
+
+        res.json({
+            success: true,
+            message: 'Estado actualizado correctamente',
+            tiempo_de_respuesta: radicadoActualizado.tiempo_de_respuesta,
+            semaforo: calcularSemaforoBackend(radicadoActualizado)
+        });
     } catch (error) {
         console.error('Error al actualizar el estado:', error);
         res.status(500).json({ success: false, message: 'Error en el servidor al actualizar' });

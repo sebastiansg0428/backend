@@ -4,7 +4,7 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "node --test"
   },
   "keywords": [],
   "author": "",
@@ -12,6 +12,7 @@
   "description": "",
   "dependencies": {
     "cors": "^2.8.6",
+    "date-holidays": "^3.37.0",
     "express": "^5.2.1",
     "multer": "^2.4.0",
     "mysql2": "^3.24.5"

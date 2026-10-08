@@ -1,17 +1,5 @@
-const DIAS_POR_TIPO_DOCUMENTO = new Map([
-    ['solicitud', 10],
-    ['solicitud simit-rut', 10],
-    ['derecho de peticion', 15],
-    ['queja', 15],
-    ['reclamo', 15],
-    ['accion de tutela', 2],
-    ['desacato de tutela', 2],
-    ['licencia de construccion', 45],
-    ['licencia urbanistica', 45]
-]);
-
-function normalizarTipoDocumento(tipoDocumento) {
-    return String(tipoDocumento || '')
+function normalizarTexto(valor) {
+    return String(valor || '')
         .normalize('NFD')
         .replace(/[\u0300-\u036f]/g, '')
         .trim()
@@ -19,15 +7,16 @@ function normalizarTipoDocumento(tipoDocumento) {
         .toLowerCase();
 }
 
-function obtenerDiasPlazo(tipoDocumento) {
-    return DIAS_POR_TIPO_DOCUMENTO.get(normalizarTipoDocumento(tipoDocumento)) || 15;
-}
+function obtenerTiempoRespuesta(termino) {
+    if (!termino || !Number.isInteger(Number(termino.dias))) {
+        return null;
+    }
 
-function obtenerTiempoRespuesta(tipoDocumento) {
-    return `${obtenerDiasPlazo(tipoDocumento)} días hábiles`;
+    const unidad = termino.tipo_dias === 'calendario' ? 'días calendario' : 'días hábiles';
+    return `${termino.dias} ${unidad}`;
 }
 
 module.exports = {
-    obtenerDiasPlazo,
+    normalizarTexto,
     obtenerTiempoRespuesta
 };

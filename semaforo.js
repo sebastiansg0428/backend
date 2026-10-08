@@ -1,5 +1,4 @@
 const Holidays = require('date-holidays');
-const { obtenerTiempoRespuesta } = require('./plazos');
 
 const calendarioFestivos = new Holidays('CO');
 const festivosPorAno = new Map();
@@ -9,6 +8,7 @@ const fechaColombia = new Intl.DateTimeFormat('en-CA', {
     month: '2-digit',
     day: '2-digit'
 });
+const MILISEGUNDOS_DIA = 86400000;
 
 function obtenerFechaLocal(fecha, nombreCampo) {
     if (typeof fecha === 'string') {
@@ -53,82 +53,156 @@ function obtenerFestivos(ano) {
     return festivosPorAno.get(ano);
 }
 
-function contarDiasHabiles(fechaInicio, fechaFin) {
-    const [anoInicio, mesInicio, diaInicio] = fechaInicio.split('-').map(Number);
-    const [anoFin, mesFin, diaFin] = fechaFin.split('-').map(Number);
-    const inicioUtc = Date.UTC(anoInicio, mesInicio - 1, diaInicio);
-    const finUtc = Date.UTC(anoFin, mesFin - 1, diaFin);
+function esDiaHabil(fechaUtc) {
+    const diaSemana = fechaUtc.getUTCDay();
+    if (diaSemana === 0 || diaSemana === 6) {
+        return false;
+    }
 
-    let diasHabiles = 0;
-    for (let fechaUtc = inicioUtc + 86400000; fechaUtc <= finUtc; fechaUtc += 86400000) {
-        const fecha = new Date(fechaUtc);
-        const diaSemana = fecha.getUTCDay();
+    return !obtenerFestivos(fechaUtc.getUTCFullYear()).has(fechaUtc.toISOString().slice(0, 10));
+}
 
-        if (diaSemana === 0 || diaSemana === 6) {
-            continue;
+function contarDias(fechaInicio, fechaFin, tipoDias = 'habiles') {
+    const inicioUtc = fechaAUTC(fechaInicio);
+    const finUtc = fechaAUTC(fechaFin);
+    if (finUtc <= inicioUtc) {
+        return 0;
+    }
+
+    let dias = 0;
+    for (let fechaUtc = inicioUtc + MILISEGUNDOS_DIA; fechaUtc <= finUtc; fechaUtc += MILISEGUNDOS_DIA) {
+        if (tipoDias === 'calendario' || esDiaHabil(new Date(fechaUtc))) {
+            dias++;
         }
+    }
+    return dias;
+}
 
-        const fechaTexto = fecha.toISOString().slice(0, 10);
-        if (!obtenerFestivos(fecha.getUTCFullYear()).has(fechaTexto)) {
-            diasHabiles++;
+function fechaAUTC(fecha) {
+    const [ano, mes, dia] = fecha.split('-').map(Number);
+    return Date.UTC(ano, mes - 1, dia);
+}
+
+function agregarDias(fechaInicio, dias, tipoDias = 'habiles') {
+    if (!Number.isInteger(Number(dias)) || Number(dias) < 1) {
+        throw new TypeError('El término debe ser un número entero mayor que cero.');
+    }
+    if (!['habiles', 'calendario'].includes(tipoDias)) {
+        throw new TypeError('El tipo de días debe ser "habiles" o "calendario".');
+    }
+
+    const inicioUtc = fechaAUTC(fechaInicio);
+    let fechaUtc = inicioUtc;
+    let diasAgregados = 0;
+    while (diasAgregados < Number(dias)) {
+        fechaUtc += MILISEGUNDOS_DIA;
+        if (tipoDias === 'calendario' || esDiaHabil(new Date(fechaUtc))) {
+            diasAgregados++;
         }
     }
 
-    return diasHabiles;
+    return new Date(fechaUtc).toISOString().slice(0, 10);
+}
+
+function obtenerDatosTermino(radicado) {
+    let dias = Number(radicado.termino_dias_aplicado);
+    let tipoDias = radicado.tipo_dias_aplicado;
+
+    if ((!Number.isInteger(dias) || dias < 1) && radicado.tiempo_de_respuesta) {
+        const coincidencia = String(radicado.tiempo_de_respuesta)
+            .match(/^\s*(\d+)\s+d[ií]as?\s*(h[aá]biles|calendario)?/i);
+        if (coincidencia) {
+            dias = Number(coincidencia[1]);
+            tipoDias = /calendario/i.test(coincidencia[2] || '') ? 'calendario' : 'habiles';
+        }
+    }
+
+    if (!Number.isInteger(dias) || dias < 1 || !['habiles', 'calendario'].includes(tipoDias)) {
+        return null;
+    }
+    return { dias, tipoDias };
+}
+
+function crearResultado(nivel, texto, clase, punto, diasRestantes, fechaLimite) {
+    return { nivel, texto, clase, punto, dias_restantes: diasRestantes, fecha_limite: fechaLimite };
 }
 
 function calcularSemaforoBackend(radicado, fechaActual = new Date()) {
-    if (String(radicado.estado || '').trim().toLowerCase() === 'respondido') {
-        return {
-            nivel: 'completado',
-            texto: 'Completado',
-            clase: 'bg-emerald-100 text-emerald-800 border-emerald-300',
-            punto: 'bg-emerald-500'
-        };
+    if (
+        String(radicado.estado || '').trim().toLowerCase() === 'respondido' ||
+        radicado.fecha_respuesta
+    ) {
+        return crearResultado(
+            'completado',
+            'Completado',
+            'bg-emerald-100 text-emerald-800 border-emerald-300',
+            'bg-emerald-500',
+            0,
+            radicado.fecha_limite_actual || radicado.fecha_limite_inicial || null
+        );
     }
 
-    const tiempoRespuesta = radicado.tipo_documento
-        ? obtenerTiempoRespuesta(radicado.tipo_documento)
-        : radicado.tiempo_de_respuesta;
-    let diasLimite = 15;
-    if (tiempoRespuesta) {
-        const coincidencia = String(tiempoRespuesta).match(/\d+/);
-        if (coincidencia) {
-            diasLimite = parseInt(coincidencia[0], 10);
-        }
+    const termino = obtenerDatosTermino(radicado);
+    if (!termino) {
+        return crearResultado(
+            'sin_termino',
+            'Sin término configurado',
+            'bg-slate-100 text-slate-700 border-slate-300',
+            'bg-slate-500',
+            null,
+            null
+        );
     }
 
-    const fechaCreacion = obtenerFechaLocal(radicado.fecha_creacion, 'fecha_creacion');
+    const fechaInicio = obtenerFechaLocal(
+        radicado.fecha_recepcion || radicado.fecha_creacion,
+        'fecha_recepcion'
+    );
     const hoy = obtenerFechaLocal(fechaActual, 'fecha actual');
-    const diasTranscurridos = contarDiasHabiles(fechaCreacion, hoy);
-    const diasRestantes = diasLimite - diasTranscurridos;
-    const cantidadDiasRestantes = `${diasRestantes} ${diasRestantes === 1 ? 'día' : 'días'}`;
+    const fechaLimite = obtenerFechaLocal(
+        radicado.fecha_limite_actual ||
+            radicado.fecha_limite_inicial ||
+            agregarDias(fechaInicio, termino.dias, termino.tipoDias),
+        'fecha_limite'
+    );
+    const diasRestantes = hoy <= fechaLimite
+        ? contarDias(hoy, fechaLimite, termino.tipoDias)
+        : -Math.max(1, contarDias(fechaLimite, hoy, termino.tipoDias));
+    const cantidadDias = `${Math.abs(diasRestantes)} ${Math.abs(diasRestantes) === 1 ? 'día' : 'días'}`;
 
     if (diasRestantes < 0) {
-        const diasVencido = Math.abs(diasRestantes);
-        return {
-            nivel: 'vencido',
-            texto: `Vencido (${diasVencido} ${diasVencido === 1 ? 'día' : 'días'})`,
-            clase: 'bg-red-100 text-red-800 border-red-300',
-            punto: 'bg-red-500 animate-pulse'
-        };
+        return crearResultado(
+            'vencido',
+            `Vencido (${cantidadDias})`,
+            'bg-red-100 text-red-800 border-red-300',
+            'bg-red-500 animate-pulse',
+            diasRestantes,
+            fechaLimite
+        );
     }
 
     if (diasRestantes <= 3) {
-        return {
-            nivel: 'alerta',
-            texto: diasRestantes === 0 ? 'Vence hoy' : `Por vencer (${cantidadDiasRestantes})`,
-            clase: 'bg-amber-100 text-amber-800 border-amber-300',
-            punto: 'bg-amber-500'
-        };
+        return crearResultado(
+            'alerta',
+            diasRestantes === 0 ? 'Vence hoy' : `Por vencer (${cantidadDias})`,
+            'bg-amber-100 text-amber-800 border-amber-300',
+            'bg-amber-500',
+            diasRestantes,
+            fechaLimite
+        );
     }
 
-    return {
-        nivel: 'a_tiempo',
-        texto: `A tiempo (${cantidadDiasRestantes})`,
-        clase: 'bg-emerald-100 text-emerald-800 border-emerald-300',
-        punto: 'bg-emerald-500'
-    };
+    return crearResultado(
+        'a_tiempo',
+        `A tiempo (${cantidadDias})`,
+        'bg-emerald-100 text-emerald-800 border-emerald-300',
+        'bg-emerald-500',
+        diasRestantes,
+        fechaLimite
+    );
 }
 
 module.exports = calcularSemaforoBackend;
+module.exports.agregarDias = agregarDias;
+module.exports.contarDias = contarDias;
+module.exports.obtenerFechaLocal = obtenerFechaLocal;

@@ -4,6 +4,7 @@ const { once } = require('node:events');
 const { obtenerEstadoEditable } = require('../estados');
 const pool = require('../db');
 const app = require('../server');
+const { crearSesion, revocarSesiones } = require('../auth');
 
 test('normaliza los estados usados por el frontend y el ENUM de MySQL', () => {
     for (const [entrada, esperado] of [
@@ -21,6 +22,21 @@ test('normaliza los estados usados por el frontend y el ENUM de MySQL', () => {
 });
 
 test('PUT estado admite los cuatro estados y actualiza el semáforo sin cambiar términos', async t => {
+    const usuario = {
+        id: 1, nombre: 'Admin de prueba', rol: 'administrador', dependencia_id: null
+    };
+    const token = crearSesion(usuario.id);
+    const funcionario = {
+        id: 2, nombre: 'Funcionario de prueba', rol: 'funcionario',
+        dependencia_id: 2, dependencia_nombre: 'Planeacion'
+    };
+    const tokenFuncionario = crearSesion(funcionario.id);
+    t.after(() => revocarSesiones(usuario.id));
+    t.after(() => revocarSesiones(funcionario.id));
+    t.mock.method(pool, 'execute', async (sql, values) => {
+        assert.match(sql, /FROM usuarios u/);
+        return [[values[0] === funcionario.id ? funcionario : usuario]];
+    });
     let estado = 'Recibido';
     let fechaRespuesta = null;
     let commits = 0;
@@ -33,6 +49,10 @@ test('PUT estado admite los cuatro estados y actualiza el semáforo sin cambiar 
         release() {},
         async execute(sql, values) {
             if (sql.includes('SELECT estado FROM radicados')) {
+                if (values.length > 1) {
+                    assert.match(sql, /radicados\.dependencia_destino_id = \?/);
+                    assert.deepEqual(values, ['RAD-PRUEBA', 2]);
+                }
                 return [[{ estado }]];
             }
             if (sql.includes('UPDATE radicados')) {
@@ -73,7 +93,7 @@ test('PUT estado admite los cuatro estados y actualiza el semáforo sin cambiar 
     for (const nuevoEstado of ['Respondido', 'Recibido', 'En tramite', 'Pendiente']) {
         const response = await fetch(url, {
             method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
             body: JSON.stringify({ estado: nuevoEstado })
         });
         assert.equal(response.status, 200);
@@ -91,7 +111,7 @@ test('PUT estado admite los cuatro estados y actualiza el semáforo sin cambiar 
     }
     const response = await fetch(url, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({ estado: 'Cerrado' })
     });
     assert.equal(response.status, 400);
@@ -101,4 +121,13 @@ test('PUT estado admite los cuatro estados y actualiza el semáforo sin cambiar 
     assert.equal(historial.length, 4);
     assert.equal(historial[0][1], 'Recibido');
     assert.equal(historial[0][2], 'Respondido');
+    const propia = await fetch(url, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tokenFuncionario}` },
+        body: JSON.stringify({ estado: 'Respondido' })
+    });
+    assert.equal(propia.status, 200);
+    assert.equal((await propia.json()).semaforo.nivel, 'completado');
+    assert.equal(commits, 5);
+    assert.equal(historial[4][3], String(funcionario.id));
 });

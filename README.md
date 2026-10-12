@@ -96,6 +96,109 @@ autoinactivacion y 422 para dependencia inexistente. Se usa
 Prueba focalizada: `node --test test\usuarios.test.js`. Las pruebas HTTP usan
 MySQL simulado; no sustituyen la aplicacion de la migracion en la base real.
 
+## Gestion de catalogos: dependencias y tipos de tramite
+
+Aplica una sola vez [007_dependencias_activas.sql](migrations/007_dependencias_activas.sql)
+antes de ejecutar esta version. Agrega `dependencias.activo` con valor inicial 1,
+sin cambiar IDs ni referencias. Respalda y revisa el esquema antes de aplicarla;
+no la repitas si la columna existe. `tipos_tramite.activo` ya existe en la
+migracion 001 y no requiere otra modificacion. Reinicia el backend.
+
+La gestion es exclusiva del administrador y requiere el token de sesion:
+
+| Accion | Dependencias | Tipos de tramite |
+| --- | --- | --- |
+| Listar activos para selectores | `GET /api/dependencias` | `GET /api/tipos-tramite` |
+| Listar todos para administrar | `GET /api/dependencias?incluir_inactivos=1` | `GET /api/tipos-tramite?incluir_inactivos=1` |
+| Consultar uno, activo o inactivo | `GET /api/dependencias/:id` | `GET /api/tipos-tramite/:id` |
+| Crear | `POST /api/dependencias` | `POST /api/tipos-tramite` |
+| Editar datos del catalogo | `PUT /api/dependencias/:id` | `PUT /api/tipos-tramite/:id` |
+| Inactivar o reactivar | `PATCH /api/dependencias/:id/estado` | `PATCH /api/tipos-tramite/:id/estado` |
+
+Las listas por defecto mantienen los permisos de lectura existentes. Un
+funcionario solo recibe su dependencia, incluso si esta inactiva, para poder
+consultar su historial; nunca recibe otras. Ventanilla y administrador reciben
+solo dependencias activas sin el parametro. `incluir_inactivos=1` es exclusivo del
+administrador; acepta solo `0` o `1`. Las listas conservan las claves
+`dependencias` y `tipos_tramite`, y agregan `activo` a cada elemento. Las consultas
+individuales devuelven `{ success, dependencia }` o `{ success, tipo_tramite }`.
+
+Para crear o editar una dependencia:
+
+```json
+{ "nombre": "Planeacion" }
+```
+
+El nombre se recorta y debe tener de 1 a 150 caracteres. La edicion conserva el
+ID: no reescribe el nombre historico guardado en los radicados ni cambia las
+asignaciones de usuarios. Usa IDs para filtrar alertas de registros antiguos;
+el filtro legado por nombre conserva su comparacion con el nombre historico.
+
+Para crear un tipo y su termino legal inicial, ambos en una transaccion:
+
+```json
+{
+  "codigo": "tramite_especial",
+  "nombre": "Tramite especial",
+  "categoria_general": "especial",
+  "dias": 15,
+  "tipo_dias": "habiles",
+  "fundamento_legal": "Indica la norma aplicable verificada por la entidad",
+  "vigente_desde": "2026-10-12"
+}
+```
+
+El ejemplo no define un plazo legal para la entidad: verifica dias, fundamento y
+vigencia antes de guardar. Codigo: de 2 a 60 caracteres, minusculas, digitos y
+guion bajo. Nombre: hasta 150 caracteres. Categorias: `peticion_general`,
+`informacion_documentos`, `consulta`, `entre_autoridades` o `especial`.
+Tipo de dias: `habiles` o `calendario`; fundamento: hasta 500 caracteres.
+
+Para editar solo los datos del catalogo:
+
+```json
+{
+  "codigo": "tramite_especial",
+  "nombre": "Tramite especial actualizado",
+  "categoria_general": "especial",
+  "orden": 5
+}
+```
+
+`orden` es opcional; si se omite, se conserva. Debe ser un entero no negativo.
+La edicion no modifica dias ni vencimientos: se rechazan campos de termino,
+vigencia o `activo` enviados a este PUT para evitar confundir operaciones.
+El nombre de catalogo consultado con joins refleja la nueva denominacion; los
+datos historicos y terminos aplicados a radicados no se reescriben.
+
+Para cambiar el plazo, utiliza la ruta existente `POST /api/terminos-legales` con
+`tipo_tramite_id`, `dias`, `tipo_dias`, `fundamento_legal` y `vigente_desde`
+(hoy o posterior). Crea una version y cierra la vigencia anterior en una
+transaccion; nunca recalcula los terminos aplicados a radicados. No admite tipos
+inactivos ni vigencias solapadas con una version de la misma fecha o posterior.
+Consulta las versiones mediante `GET /api/terminos-legales?tipo_tramite_id=1`.
+
+Ambas rutas PATCH reciben `{ "activo": 0 }` para inactivar y `{ "activo": 1 }`
+para reactivar, con numeros, no cadenas ni booleanos. No hay DELETE ni borrado
+fisico. Inactivar excluye de los selectores y bloquea su uso en nuevos radicados,
+incluso si el cliente envia su ID o nombre manualmente. No suspende cuentas ni
+impide consultar o gestionar radicados anteriores. Para suspender una cuenta
+utiliza el estado de usuarios. Reactivar conserva el ID y las versiones legales;
+para radicar con un tipo sigue siendo necesario un termino vigente.
+Los nombres y codigos de elementos inactivos siguen reservados: reactiva el
+elemento existente en lugar de crear un duplicado.
+
+Creacion: 201; consultas y cambios: 200. Errores con `{ success: false, message }`:
+400 para datos invalidos, 401 sin sesion, 403 sin permiso administrativo, 404 para
+elemento inexistente, 409 para duplicados/conflictos y 422 al intentar radicar con
+una dependencia inactiva o un tipo sin termino activo y vigente.
+
+En el frontend agrega una pantalla administrativa con tabla, formulario de
+creacion/edicion y accion Activar/Inactivar; usa las listas completas solo alli.
+En los formularios de radicacion conserva las listas por defecto. Muestra
+`message` ante errores y recarga la lista despues de un cambio confirmado.
+Prueba focalizada: `node --test test\catalogos.test.js` (MySQL simulado).
+
 ### Sesion
 
 - `POST /api/auth/login`: JSON `{ "email": "...", "password": "..." }`.
@@ -122,7 +225,7 @@ almacen persistente de sesiones y configuracion de origenes CORS/proxy.
 | Gestionar estado | Si | No | Solo propia dependencia |
 | Enviar respuesta institucional | Si | No | Solo propia dependencia |
 | Configurar terminos y ampliar vencimientos | Si | No | No |
-| Gestionar usuarios y crear dependencias | Si | No | No |
+| Gestionar usuarios, dependencias y tipos de tramite | Si | No | No |
 
 Todos los endpoints existentes `/api` requieren sesion, excepto login. La antigua
 clave `x-admin-key` ya no autoriza operaciones. Usuarios sin dependencia valida no

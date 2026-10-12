@@ -260,18 +260,18 @@ app.post('/api/radicados', permitirRoles('administrador', 'ventanilla'), upload.
                 eliminarArchivoSubido(req.file);
                 return responderError(res, 400, 'dependencia_destino_id debe ser un entero positivo.');
             }
-            const [rows] = await pool.execute('SELECT id, nombre FROM dependencias WHERE id = ?', [id]);
+            const [rows] = await pool.execute('SELECT id, nombre FROM dependencias WHERE id = ? AND activo = 1', [id]);
             dependencia = rows[0];
         } else if (typeof dependencia_destino === 'string' && dependencia_destino.trim()) {
             const [rows] = await pool.execute(
-                'SELECT id, nombre FROM dependencias WHERE nombre = ?',
+                'SELECT id, nombre FROM dependencias WHERE nombre = ? AND activo = 1',
                 [dependencia_destino.trim()]
             );
             dependencia = rows[0];
         }
         if (!dependencia) {
             eliminarArchivoSubido(req.file);
-            return responderError(res, 422, 'Selecciona una dependencia existente del catalogo.');
+            return responderError(res, 422, 'Selecciona una dependencia activa del catalogo.');
         }
 
         if (
@@ -406,25 +406,87 @@ app.post('/api/radicados', permitirRoles('administrador', 'ventanilla'), upload.
 });
 
 app.get('/api/tipos-tramite', async (req, res) => {
+    const incluirInactivos = req.query.incluir_inactivos;
+    if (incluirInactivos !== undefined && incluirInactivos !== '0' && incluirInactivos !== '1') {
+        return responderError(res, 400, 'incluir_inactivos debe ser 0 o 1.');
+    }
+    if (incluirInactivos === '1' && req.usuario.rol !== 'administrador') {
+        return responderError(res, 403, 'Solo el administrador puede consultar el catalogo completo.');
+    }
     try {
         const hoy = obtenerFechaLocal(new Date(), 'fecha actual');
         const [rows] = await pool.query(
-            `SELECT t.id, t.codigo, t.nombre, t.categoria_general, t.orden,
+            `SELECT t.id, t.codigo, t.nombre, t.categoria_general, t.orden, t.activo,
                     l.id AS termino_legal_id, l.dias, l.tipo_dias, l.fundamento_legal
              FROM tipos_tramite AS t
              LEFT JOIN terminos_legales AS l
                ON l.tipo_tramite_id = t.id
               AND l.vigente_desde <= ?
               AND (l.vigente_hasta IS NULL OR l.vigente_hasta >= ?)
-             WHERE t.activo = TRUE
+             WHERE (t.activo = TRUE OR ? = 1)
              ORDER BY COALESCE(NULLIF(t.orden, 0), 999) ASC, t.id ASC`,
-            [hoy, hoy]
+            [hoy, hoy, incluirInactivos === '1' ? 1 : 0]
         );
         return res.json({ success: true, tipos_tramite: rows });
     } catch (error) {
         console.error('Error al consultar los tipos de trámite:', error);
         return responderError(res, 500, 'Error interno al consultar los tipos de trámite.');
     }
+});
+
+app.get('/api/tipos-tramite/:id', protegerAdministracion, async (req, res, next) => {
+    const id = Number(req.params.id);
+    if (!Number.isSafeInteger(id) || id < 1) {
+        return responderError(res, 400, 'ID de tipo de tramite invalido.');
+    }
+    try {
+        const [rows] = await pool.execute(
+            'SELECT id, codigo, nombre, categoria_general, orden, activo FROM tipos_tramite WHERE id = ?',
+            [id]
+        );
+        if (!rows.length) return responderError(res, 404, 'Tipo de tramite no encontrado.');
+        return res.json({ success: true, tipo_tramite: rows[0] });
+    } catch (error) { next(error); }
+});
+
+app.put('/api/tipos-tramite/:id', protegerAdministracion, async (req, res, next) => {
+    const id = Number(req.params.id);
+    const { codigo, nombre, categoria_general, orden } = req.body || {};
+    if (!Number.isSafeInteger(id) || id < 1 ||
+        typeof codigo !== 'string' || !/^[a-z0-9_]{2,60}$/.test(codigo) ||
+        typeof nombre !== 'string' || !nombre.trim() || nombre.trim().length > 150 ||
+        !CATEGORIAS_TRAMITE.has(categoria_general) ||
+        (orden !== undefined && (!Number.isInteger(orden) || orden < 0 || orden > 2147483647)) ||
+        ['dias', 'tipo_dias', 'fundamento_legal', 'vigente_desde', 'vigente_hasta', 'activo']
+            .some(campo => req.body?.[campo] !== undefined)) {
+        return responderError(res, 400, 'Datos de catalogo invalidos. Usa las rutas de terminos legales y estado para modificar vigencia o activacion.');
+    }
+    try {
+        const [result] = await pool.execute(
+            `UPDATE tipos_tramite SET codigo = ?, nombre = ?, categoria_general = ?,
+                orden = COALESCE(?, orden) WHERE id = ?`,
+            [codigo, nombre.trim(), categoria_general, orden ?? null, id]
+        );
+        if (!result.affectedRows) return responderError(res, 404, 'Tipo de tramite no encontrado.');
+        return res.json({ success: true, tipo_tramite: { id, codigo, nombre: nombre.trim(), categoria_general },
+            message: 'Tipo de tramite actualizado sin alterar los terminos aplicados.' });
+    } catch (error) { next(error); }
+});
+
+app.patch('/api/tipos-tramite/:id/estado', protegerAdministracion, async (req, res, next) => {
+    const id = Number(req.params.id);
+    const activo = req.body?.activo;
+    if (!Number.isSafeInteger(id) || id < 1 || (activo !== 0 && activo !== 1)) {
+        return responderError(res, 400, 'Indica un ID valido y activo como 0 o 1.');
+    }
+    try {
+        const [result] = await pool.execute('UPDATE tipos_tramite SET activo = ? WHERE id = ?', [activo, id]);
+        if (!result.affectedRows) return responderError(res, 404, 'Tipo de tramite no encontrado.');
+        return res.json({
+            success: true, tipo_tramite: { id, activo },
+            message: activo === 1 ? 'Tipo de tramite activado.' : 'Tipo de tramite inactivado.'
+        });
+    } catch (error) { next(error); }
 });
 
 app.get('/api/terminos-legales', async (req, res) => {
@@ -460,16 +522,16 @@ app.post('/api/tipos-tramite', protegerAdministracion, async (req, res) => {
         tipo_dias,
         fundamento_legal,
         vigente_desde
-    } = req.body;
+    } = req.body || {};
     const diasNumero = Number(dias);
     const inicio = vigente_desde || obtenerFechaLocal(new Date(), 'vigente_desde');
     if (
         typeof codigo !== 'string' || !/^[a-z0-9_]{2,60}$/.test(codigo) ||
-        typeof nombre !== 'string' || !nombre.trim() ||
+        typeof nombre !== 'string' || !nombre.trim() || nombre.trim().length > 150 ||
         !CATEGORIAS_TRAMITE.has(categoria_general) ||
-        !Number.isInteger(diasNumero) || diasNumero < 1 ||
+        !Number.isInteger(diasNumero) || diasNumero < 1 || diasNumero > 2147483647 ||
         !['habiles', 'calendario'].includes(tipo_dias) ||
-        typeof fundamento_legal !== 'string' || !fundamento_legal.trim() ||
+        typeof fundamento_legal !== 'string' || !fundamento_legal.trim() || fundamento_legal.trim().length > 500 ||
         !esFechaISO(inicio)
     ) {
         return responderError(
@@ -479,8 +541,9 @@ app.post('/api/tipos-tramite', protegerAdministracion, async (req, res) => {
         );
     }
 
-    const connection = await pool.getConnection();
+    let connection;
     try {
+        connection = await pool.getConnection();
         await connection.beginTransaction();
         const [result] = await connection.execute(
             `INSERT INTO tipos_tramite (codigo, nombre, categoria_general)
@@ -500,28 +563,28 @@ app.post('/api/tipos-tramite', protegerAdministracion, async (req, res) => {
             message: 'Tipo de trámite y término inicial creados.'
         });
     } catch (error) {
-        await connection.rollback();
+        if (connection) await connection.rollback();
         if (error.code === 'ER_DUP_ENTRY') {
             return responderError(res, 409, 'Ya existe un tipo de trámite con ese código o nombre.');
         }
         console.error('Error al crear tipo de trámite:', error);
         return responderError(res, 500, 'Error interno al crear el tipo de trámite.');
     } finally {
-        connection.release();
+        if (connection) connection.release();
     }
 });
 
 app.post('/api/terminos-legales', protegerAdministracion, async (req, res) => {
-    const { tipo_tramite_id, dias, tipo_dias, fundamento_legal, vigente_desde } = req.body;
+    const { tipo_tramite_id, dias, tipo_dias, fundamento_legal, vigente_desde } = req.body || {};
     const tipoId = Number(tipo_tramite_id);
     const diasNumero = Number(dias);
     const inicio = vigente_desde || obtenerFechaLocal(new Date(), 'vigente_desde');
     const hoy = obtenerFechaLocal(new Date(), 'hoy');
     if (
-        !Number.isInteger(tipoId) || tipoId < 1 ||
-        !Number.isInteger(diasNumero) || diasNumero < 1 ||
+        !Number.isSafeInteger(tipoId) || tipoId < 1 ||
+        !Number.isInteger(diasNumero) || diasNumero < 1 || diasNumero > 2147483647 ||
         !['habiles', 'calendario'].includes(tipo_dias) ||
-        typeof fundamento_legal !== 'string' || !fundamento_legal.trim() ||
+        typeof fundamento_legal !== 'string' || !fundamento_legal.trim() || fundamento_legal.trim().length > 500 ||
         !esFechaISO(inicio) || inicio < hoy
     ) {
         return responderError(
@@ -531,8 +594,9 @@ app.post('/api/terminos-legales', protegerAdministracion, async (req, res) => {
         );
     }
 
-    const connection = await pool.getConnection();
+    let connection;
     try {
+        connection = await pool.getConnection();
         await connection.beginTransaction();
         const [tipos] = await connection.execute(
             'SELECT id FROM tipos_tramite WHERE id = ? AND activo = TRUE FOR UPDATE',
@@ -578,11 +642,11 @@ app.post('/api/terminos-legales', protegerAdministracion, async (req, res) => {
             message: 'Nuevo término registrado sin alterar los términos ya aplicados a radicados.'
         });
     } catch (error) {
-        await connection.rollback();
+        if (connection) await connection.rollback();
         console.error('Error al crear versión del término legal:', error);
         return responderError(res, 500, 'Error interno al actualizar el término legal.');
     } finally {
-        connection.release();
+        if (connection) connection.release();
     }
 });
 

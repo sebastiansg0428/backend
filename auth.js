@@ -201,25 +201,76 @@ router.post('/auth/logout', autenticar, (req, res) => {
 });
 
 router.get('/dependencias', autenticar, async (req, res, next) => {
+    const incluirInactivos = req.query.incluir_inactivos;
+    if (incluirInactivos !== undefined && incluirInactivos !== '0' && incluirInactivos !== '1') {
+        return errorHTTP(res, 400, 'incluir_inactivos debe ser 0 o 1.');
+    }
+    if (incluirInactivos === '1' && req.usuario.rol !== 'administrador') {
+        return errorHTTP(res, 403, 'Solo el administrador puede consultar el catalogo completo.');
+    }
     try {
         const [rows] = await pool.execute(
-            `SELECT id, nombre FROM dependencias
-             WHERE (? IS NULL OR id = ?) ORDER BY nombre`,
+            `SELECT id, nombre, activo FROM dependencias
+             WHERE (? IS NULL OR id = ?)
+               AND (activo = 1 OR ? = 1) ORDER BY nombre`,
             req.usuario.rol === 'funcionario'
-                ? [req.usuario.dependencia_id, req.usuario.dependencia_id] : [null, null]
+                ? [req.usuario.dependencia_id, req.usuario.dependencia_id, 1]
+                : [null, null, incluirInactivos === '1' ? 1 : 0]
         );
         res.json({ success: true, dependencias: rows });
     } catch (error) { next(error); }
 });
 
 router.post('/dependencias', autenticar, permitirRoles('administrador'), async (req, res, next) => {
-    const nombre = typeof req.body.nombre === 'string' ? req.body.nombre.trim() : '';
+    const nombre = typeof req.body?.nombre === 'string' ? req.body.nombre.trim() : '';
     if (!nombre || nombre.length > 150) {
         return errorHTTP(res, 400, 'El nombre de la dependencia es obligatorio (maximo 150 caracteres).');
     }
     try {
         const [result] = await pool.execute('INSERT INTO dependencias (nombre) VALUES (?)', [nombre]);
-        res.status(201).json({ success: true, dependencia: { id: result.insertId, nombre } });
+        res.status(201).json({ success: true, dependencia: { id: result.insertId, nombre, activo: 1 } });
+    } catch (error) { next(error); }
+});
+
+router.get('/dependencias/:id', autenticar, permitirRoles('administrador'), async (req, res, next) => {
+    const id = Number(req.params.id);
+    if (!Number.isSafeInteger(id) || id < 1) {
+        return errorHTTP(res, 400, 'ID de dependencia invalido.');
+    }
+    try {
+        const [rows] = await pool.execute('SELECT id, nombre, activo FROM dependencias WHERE id = ?', [id]);
+        if (!rows.length) return errorHTTP(res, 404, 'Dependencia no encontrada.');
+        res.json({ success: true, dependencia: rows[0] });
+    } catch (error) { next(error); }
+});
+
+router.put('/dependencias/:id', autenticar, permitirRoles('administrador'), async (req, res, next) => {
+    const id = Number(req.params.id);
+    const nombre = typeof req.body?.nombre === 'string' ? req.body.nombre.trim() : '';
+    if (!Number.isSafeInteger(id) || id < 1 || !nombre || nombre.length > 150 ||
+        req.body?.activo !== undefined) {
+        return errorHTTP(res, 400, 'Indica un ID valido y un nombre de 1 a 150 caracteres.');
+    }
+    try {
+        const [result] = await pool.execute('UPDATE dependencias SET nombre = ? WHERE id = ?', [nombre, id]);
+        if (!result.affectedRows) return errorHTTP(res, 404, 'Dependencia no encontrada.');
+        res.json({ success: true, dependencia: { id, nombre }, message: 'Dependencia actualizada.' });
+    } catch (error) { next(error); }
+});
+
+router.patch('/dependencias/:id/estado', autenticar, permitirRoles('administrador'), async (req, res, next) => {
+    const id = Number(req.params.id);
+    const activo = req.body?.activo;
+    if (!Number.isSafeInteger(id) || id < 1 || (activo !== 0 && activo !== 1)) {
+        return errorHTTP(res, 400, 'Indica un ID valido y activo como 0 o 1.');
+    }
+    try {
+        const [result] = await pool.execute('UPDATE dependencias SET activo = ? WHERE id = ?', [activo, id]);
+        if (!result.affectedRows) return errorHTTP(res, 404, 'Dependencia no encontrada.');
+        res.json({
+            success: true, dependencia: { id, activo },
+            message: activo === 1 ? 'Dependencia activada.' : 'Dependencia inactivada.'
+        });
     } catch (error) { next(error); }
 });
 

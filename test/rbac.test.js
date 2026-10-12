@@ -33,7 +33,7 @@ test('login obtiene rol de MySQL, me lo confirma y logout invalida el token', as
     const usuario = {
         id: 31, nombre: 'Login de prueba', email: 'login@example.test',
         password: await hashPassword('Password-de-prueba-123'),
-        rol: 'funcionario', dependencia_id: 2, dependencia_nombre: 'Planeacion'
+        rol: 'funcionario', dependencia_id: 2, dependencia_nombre: 'Planeacion', activo: 1
     };
     t.after(() => revocarSesiones(usuario.id));
     t.mock.method(pool, 'execute', async (sql, values) => {
@@ -70,10 +70,10 @@ test('login obtiene rol de MySQL, me lo confirma y logout invalida el token', as
 
 test('RBAC HTTP aplica permisos en listas, alertas, archivos, historial y escrituras', async t => {
     const usuarios = new Map([
-        [11, { id: 11, nombre: 'Admin', rol: 'administrador', dependencia_id: null }],
-        [12, { id: 12, nombre: 'Ventanilla', rol: 'ventanilla', dependencia_id: null }],
-        [13, { id: 13, nombre: 'Funcionario', rol: 'funcionario', dependencia_id: 2, dependencia_nombre: 'Planeacion' }],
-        [14, { id: 14, nombre: 'Sin oficina', rol: 'funcionario', dependencia_id: null }]
+        [11, { id: 11, nombre: 'Admin', rol: 'administrador', dependencia_id: null, activo: 1 }],
+        [12, { id: 12, nombre: 'Ventanilla', rol: 'ventanilla', dependencia_id: null, activo: 1 }],
+        [13, { id: 13, nombre: 'Funcionario', rol: 'funcionario', dependencia_id: 2, dependencia_nombre: 'Planeacion', activo: 1 }],
+        [14, { id: 14, nombre: 'Sin oficina', rol: 'funcionario', dependencia_id: null, activo: 1 }]
     ]);
     const tokens = new Map([...usuarios.keys()].map(id => [id, crearSesion(id)]));
     t.after(() => { for (const id of usuarios.keys()) revocarSesiones(id); });
@@ -116,9 +116,11 @@ test('RBAC HTTP aplica permisos en listas, alertas, archivos, historial y escrit
         if (sql.includes('FROM usuarios u')) return [[usuarios.get(values[0])].filter(Boolean)];
         if (sql.includes('SELECT r.id FROM radicados r')) {
             const esArchivo = sql.includes('r.ruta_archivo');
+            if (esArchivo) assert.deepEqual(values.slice(0, 3), [values[0], values[0], values[0]]);
+            const dependenciaId = values[esArchivo ? 3 : 1];
             const encontrados = registros.filter(r =>
                 (esArchivo ? r.ruta_archivo === values[0] : r.numero_radicado === values[0]) &&
-                (!sql.includes('r.dependencia_destino_id = ?') || r.dependencia_destino_id === values[1]));
+                (!sql.includes('r.dependencia_destino_id = ?') || r.dependencia_destino_id === dependenciaId));
             return [encontrados];
         }
         if (sql.includes('FROM historial_radicado')) return [[{ campo_modificado: 'estado' }]];
@@ -278,7 +280,7 @@ test('funcionario sin dependencia valida recibe 403 sin consultar radicados ni i
         [-1, 'Planeacion'], [1.5, 'Planeacion'], ['2', 'Planeacion'],
         [2, null], [2, ''], [999, null]
     ]) {
-        usuario = { id: 41, nombre: 'Invalido', rol: 'funcionario', dependencia_id, dependencia_nombre };
+        usuario = { id: 41, nombre: 'Invalido', rol: 'funcionario', dependencia_id, dependencia_nombre, activo: 1 };
         for (const [ruta, method] of rutas) {
             const token = crearSesion(usuario.id);
             const respuesta = await fetch(url + ruta, {

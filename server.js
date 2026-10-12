@@ -296,7 +296,6 @@ app.post('/api/radicados', permitirRoles('administrador', 'ventanilla'), upload.
                 'El tipo de trámite no tiene un término vigente configurado. Selecciona un tipo válido o solicita su configuración al administrador.'
             );
         }
-
         const fechaLimite = agregarDias(fechaRecepcion, termino.dias, termino.tipo_dias);
         // Generar número de radicado único (Ej: RAD-20260930-4821)
         const fechaHoy = fechaRecepcion.replace(/-/g, '');
@@ -1004,32 +1003,6 @@ app.use((error, req, res, next) => {
     }
     return responderError(res, 500, 'Error interno del servidor.');
 });
-
-// Endpoint para obtener los usuarios filtrados por rol (ej: ?rol=ventanilla)
-app.get('/api/usuarios', async (req, res) => {
-    try {
-        const { rol } = req.query; // Captura el parámetro enviado desde el frontend (?rol=ventanilla)
-
-        let query = 'SELECT id, nombre, email, rol, dependencia_id FROM usuarios';
-        let params = [];
-
-        // Si el frontend solicita un rol específico, filtramos en la base de datos MySQL
-        if (rol) {
-            query += ' WHERE rol = ?';
-            params.push(rol);
-        }
-
-        const [filas] = await pool.execute(query, params);
-
-        // Devolvemos la lista limpia en formato JSON
-        res.json(filas);
-
-    } catch (error) {
-        console.error('Error al consultar los usuarios:', error);
-        res.status(500).json({ success: false, error: 'Error interno en el servidor' });
-    }
-});
-
 
 // Iniciar servidor
 if (require.main === module) {

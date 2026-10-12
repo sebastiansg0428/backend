@@ -40,6 +40,62 @@ El script no sustituye una cuenta existente. Despues del primer administrador,
 crea cuentas mediante `POST /api/usuarios`, exclusivamente con sesion administrativa.
 Los funcionarios necesitan `dependencia_id`; administrador y ventanilla usan NULL.
 
+## Gestion y edicion de usuarios
+
+Antes de iniciar esta version, aplica una sola vez
+[006_usuarios_activos.sql](migrations/006_usuarios_activos.sql). Agrega `activo`
+con valor inicial 1 a todas las cuentas existentes; no borra usuarios ni cambia
+sus roles. Realiza un respaldo y revisa el esquema antes de aplicar la migracion.
+No la repitas si la columna ya existe. Reinicia el backend despues de aplicarla.
+
+Todas las operaciones de gestion requieren una sesion de administrador:
+
+| Operacion | Metodo y ruta | Resultado |
+| --- | --- | --- |
+| Crear | `POST /api/usuarios` | 201, cuenta activa |
+| Listar | `GET /api/usuarios` | 200, incluye cuentas activas e inactivas |
+| Consultar para editar | `GET /api/usuarios/:id` | 200, datos de una cuenta |
+| Editar | `PUT /api/usuarios/:id` | 200, revoca las sesiones del usuario editado |
+| Inactivar (baja logica) | `PATCH /api/usuarios/:id/estado` con `{ "activo": 0 }` | 200, suspende el acceso |
+| Reactivar | `PATCH /api/usuarios/:id/estado` con `{ "activo": 1 }` | 200, requiere nuevo login |
+
+Ejemplo de creacion:
+
+```json
+{
+  "nombre": "Ana Perez",
+  "email": "ana@example.com",
+  "password": "Una-clave-larga-123",
+  "rol": "funcionario",
+  "dependencia_id": 2
+}
+```
+
+La dependencia debe existir. Para administrador y ventanilla usa
+`dependencia_id: null`. El servidor recorta nombre y email, normaliza el email a
+minusculas y almacena la clave con scrypt. Las respuestas de gestion nunca
+incluyen la clave ni su hash.
+
+Para editar, envia nombre, email, rol y dependencia_id; omite `password` si
+quieres conservarla. Si la envias, debe tener entre 10 y 128 caracteres. La
+edicion no cambia `activo`: utiliza la ruta de estado para activar o inactivar.
+La creacion siempre produce una cuenta activa.
+
+No hay borrado fisico ni ruta `DELETE`: la baja logica conserva la identidad del
+autor, los radicados y las respuestas institucionales. Activar o inactivar revoca
+todas las sesiones de esa cuenta. Una cuenta inactiva no puede iniciar sesion y
+su estado se comprueba en cada solicitud autenticada. La lista administrativa
+incluye `activo`; el selector `GET /api/usuarios/ventanilla` solo incluye cuentas
+activas. Un administrador no puede inactivarse ni quitarse su propio rol.
+
+Errores: 400 para datos invalidos, 401 sin sesion valida, 403 para rol no permitido
+o cuenta inactiva, 404 para usuario inexistente, 409 para email duplicado o
+autoinactivacion y 422 para dependencia inexistente. Se usa
+`{ "success": false, "message": "..." }`.
+
+Prueba focalizada: `node --test test\usuarios.test.js`. Las pruebas HTTP usan
+MySQL simulado; no sustituyen la aplicacion de la migracion en la base real.
+
 ### Sesion
 
 - `POST /api/auth/login`: JSON `{ "email": "...", "password": "..." }`.

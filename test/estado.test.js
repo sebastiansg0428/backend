@@ -23,12 +23,12 @@ test('normaliza los estados usados por el frontend y el ENUM de MySQL', () => {
 
 test('PUT estado admite los cuatro estados y actualiza el semáforo sin cambiar términos', async t => {
     const usuario = {
-        id: 1, nombre: 'Admin de prueba', rol: 'administrador', dependencia_id: null
+        id: 1, nombre: 'Admin de prueba', rol: 'administrador', dependencia_id: null, activo: 1
     };
     const token = crearSesion(usuario.id);
     const funcionario = {
         id: 2, nombre: 'Funcionario de prueba', rol: 'funcionario',
-        dependencia_id: 2, dependencia_nombre: 'Planeacion'
+        dependencia_id: 2, dependencia_nombre: 'Planeacion', activo: 1
     };
     const tokenFuncionario = crearSesion(funcionario.id);
     t.after(() => revocarSesiones(usuario.id));

@@ -66,13 +66,17 @@ async function autenticar(req, res, next) {
     }
     try {
         const [rows] = await pool.execute(
-            `SELECT u.id, u.nombre, u.email, u.rol, u.dependencia_id,
+            `SELECT u.id, u.nombre, u.email, u.rol, u.dependencia_id, u.activo,
                     d.nombre AS dependencia_nombre
              FROM usuarios u
              LEFT JOIN dependencias d ON d.id = u.dependencia_id
              WHERE u.id = ?`,
             [sesion.usuarioId]
         );
+        if (rows[0] && rows[0].activo !== 1) {
+            revocarSesiones(rows[0].id);
+            return errorHTTP(res, 403, 'La cuenta esta inactiva. Contacta al administrador.');
+        }
         if (!rows[0] || !configuracionUsuarioValida(rows[0]) ||
             (rows[0].rol === 'funcionario' && !rows[0].dependencia_nombre)) {
             sesiones.delete(clave);
@@ -121,6 +125,11 @@ async function autorizarRadicado(req, res, next) {
 }
 
 function datosUsuario(body) {
+    if (!body || typeof body !== 'object' || Array.isArray(body)) return null;
+    if (body.dependencia_id !== undefined && body.dependencia_id !== null &&
+        typeof body.dependencia_id !== 'number' && typeof body.dependencia_id !== 'string') {
+        return null;
+    }
     const nombre = typeof body.nombre === 'string' ? body.nombre.trim() : '';
     const email = typeof body.email === 'string' ? body.email.trim().toLowerCase() : '';
     const dependenciaId = body.dependencia_id === null || body.dependencia_id === undefined
@@ -166,6 +175,10 @@ router.post('/auth/login', async (req, res, next) => {
         const usuario = rows[0];
         if (!usuario || !await verificarPassword(password, usuario.password)) {
             return errorHTTP(res, 401, 'Credenciales incorrectas.');
+        }
+        if (usuario.activo !== 1) {
+            revocarSesiones(usuario.id);
+            return errorHTTP(res, 403, 'La cuenta esta inactiva. Contacta al administrador.');
         }
         if (!configuracionUsuarioValida(usuario)) {
             return errorHTTP(res, 403, 'El usuario tiene una configuracion de rol o dependencia invalida.');
@@ -213,7 +226,7 @@ router.post('/dependencias', autenticar, permitirRoles('administrador'), async (
 router.get('/usuarios/ventanilla', autenticar, permitirRoles('administrador'), async (req, res, next) => {
     try {
         const [rows] = await pool.execute(
-            "SELECT id, nombre FROM usuarios WHERE rol = 'ventanilla' ORDER BY nombre"
+            "SELECT id, nombre FROM usuarios WHERE rol = 'ventanilla' AND activo = 1 ORDER BY nombre"
         );
         res.json({ success: true, usuarios: rows });
     } catch (error) { next(error); }
@@ -221,8 +234,23 @@ router.get('/usuarios/ventanilla', autenticar, permitirRoles('administrador'), a
 
 router.get('/usuarios', autenticar, permitirRoles('administrador'), async (req, res, next) => {
     try {
-        const [rows] = await pool.query('SELECT id, nombre, email, rol, dependencia_id FROM usuarios ORDER BY nombre');
+        const [rows] = await pool.query('SELECT id, nombre, email, rol, dependencia_id, activo FROM usuarios ORDER BY nombre');
         res.json({ success: true, usuarios: rows });
+    } catch (error) { next(error); }
+});
+
+router.get('/usuarios/:id', autenticar, permitirRoles('administrador'), async (req, res, next) => {
+    const id = Number(req.params.id);
+    if (!Number.isSafeInteger(id) || id < 1) {
+        return errorHTTP(res, 400, 'ID de usuario invalido.');
+    }
+    try {
+        const [rows] = await pool.execute(
+            'SELECT id, nombre, email, rol, dependencia_id, activo FROM usuarios WHERE id = ?',
+            [id]
+        );
+        if (!rows.length) return errorHTTP(res, 404, 'Usuario no encontrado.');
+        res.json({ success: true, usuario: rows[0] });
     } catch (error) { next(error); }
 });
 
@@ -237,14 +265,14 @@ router.post('/usuarios', autenticar, permitirRoles('administrador'), async (req,
             'INSERT INTO usuarios (nombre, email, password, rol, dependencia_id) VALUES (?, ?, ?, ?, ?)',
             [usuario.nombre, usuario.email, password, usuario.rol, usuario.dependencia_id]
         );
-        res.status(201).json({ success: true, usuario: { id: result.insertId, ...usuario } });
+        res.status(201).json({ success: true, usuario: { id: result.insertId, ...usuario, activo: 1 } });
     } catch (error) { next(error); }
 });
 
 router.put('/usuarios/:id', autenticar, permitirRoles('administrador'), async (req, res, next) => {
     const id = Number(req.params.id);
     const usuario = datosUsuario(req.body);
-    if (!Number.isInteger(id) || id < 1 || !usuario ||
+    if (!Number.isSafeInteger(id) || id < 1 || !usuario ||
         (req.body.password !== undefined && !passwordValido(req.body.password))) {
         return errorHTTP(res, 400, 'Datos de usuario invalidos.');
     }
@@ -261,6 +289,28 @@ router.put('/usuarios/:id', autenticar, permitirRoles('administrador'), async (r
         if (!result.affectedRows) return errorHTTP(res, 404, 'Usuario no encontrado.');
         revocarSesiones(id);
         res.json({ success: true, usuario: { id, ...usuario }, message: 'Usuario actualizado; sus sesiones se revocaron.' });
+    } catch (error) { next(error); }
+});
+
+router.patch('/usuarios/:id/estado', autenticar, permitirRoles('administrador'), async (req, res, next) => {
+    const id = Number(req.params.id);
+    const activo = req.body?.activo;
+    if (!Number.isSafeInteger(id) || id < 1 || (activo !== 0 && activo !== 1)) {
+        return errorHTTP(res, 400, 'Indica un ID valido y activo como 0 o 1.');
+    }
+    if (id === req.usuario.id && activo === 0) {
+        return errorHTTP(res, 409, 'No puedes inactivar tu propia cuenta de administrador.');
+    }
+    try {
+        const [result] = await pool.execute('UPDATE usuarios SET activo = ? WHERE id = ?', [activo, id]);
+        if (!result.affectedRows) return errorHTTP(res, 404, 'Usuario no encontrado.');
+        revocarSesiones(id);
+        res.json({
+            success: true, usuario: { id, activo },
+            message: activo === 1
+                ? 'Usuario activado; debe iniciar sesion nuevamente.'
+                : 'Usuario inactivado; sus sesiones se revocaron.'
+        });
     } catch (error) { next(error); }
 });
 

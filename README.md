@@ -13,7 +13,10 @@ recarga los archivos automaticamente.
 ## RBAC y autenticacion
 
 Aplica una sola vez [003_rbac.sql](migrations/003_rbac.sql) despues de las
-migraciones de terminos. El script crea `dependencias` y `usuarios`, agrega
+migraciones de terminos. Para instalaciones nuevas, aplica [004_respuestas_institucionales.sql](migrations/004_respuestas_institucionales.sql)
+para crear `respuestas_radicado`. Si la tabla ya existe con las columnas
+`numero_radicado`, `contenido`, `plantilla`, `nombre_archivo`, `ruta_archivo`,
+`usuario_id` y `fecha_envio`, no necesitas ejecutar esa migración. El script 003 crea `dependencias` y `usuarios`, agrega
 `radicados.dependencia_destino_id` con FK e indice y enlaza los nombres historicos
 de dependencias. No repitas la migracion en una base que ya tenga esas tablas o
 columna; primero revisa su esquema. Las claves se almacenan con scrypt en el campo
@@ -61,6 +64,7 @@ almacen persistente de sesiones y configuracion de origenes CORS/proxy.
 | Consultar radicados, alertas, historial y PDFs | Todos | Todos | Solo propia dependencia |
 | Crear radicados | Si | Si | No |
 | Gestionar estado | Si | No | Solo propia dependencia |
+| Enviar respuesta institucional | Si | No | Solo propia dependencia |
 | Configurar terminos y ampliar vencimientos | Si | No | No |
 | Gestionar usuarios y crear dependencias | Si | No | No |
 
@@ -77,6 +81,18 @@ su existencia; una accion de rol no permitido devuelve 403; sin sesion, 401.
   administrador no puede quitarse su propio rol.
 - `GET /api/alertas?dependencia_id=2`: el funcionario solo puede indicar su ID.
   Se conserva `?dependencia=nombre` por compatibilidad, con igual restriccion.
+  Un filtro de otra dependencia devuelve 403. Una vez validado, para funcionarios
+  el SQL usa exclusivamente el ID de la identidad autenticada, no el nombre
+  historico del radicado ni los filtros del cliente. Administrador y ventanilla
+  conservan ambos filtros opcionales y la consulta global sin filtros.
+- `GET /api/radicados`: para funcionarios filtra por
+  `radicados.dependencia_destino_id = req.usuario.dependencia_id`, ignorando
+  parametros de dependencia o rol del cliente. Sin una asignacion valida, las
+  rutas protegidas devuelven 403 con `{ success: false, message }`, sin datos.
+- `GET /api/radicados/:numero_radicado/historial`, `GET`/`HEAD /uploads/:archivo`
+  y `PUT /api/radicados/:numero_radicado/estado` comprueban la misma pertenencia.
+  No existe una ruta independiente `GET /api/radicados/:numero_radicado` ni una
+  ruta de adjuntos bajo `/api/radicados`; los PDFs se consultan en `/uploads`.
 - `POST /api/radicados`: envia `dependencia_destino_id` en FormData.
   Temporalmente se admite `dependencia_destino` por nombre exacto de catalogo.
   El servidor guarda ID y nombre de la misma oficina y usa al usuario autenticado
@@ -105,6 +121,28 @@ URL al cerrar el visor. Un iframe/link directo a `/uploads` no puede enviar el
 header y fallara con 401. No pongas el token en la URL.
 
 ## Cambio de estado
+
+`POST /api/radicados/:numero_radicado/respuesta` acepta `multipart/form-data`
+con `contenido` (10 a 10.000 caracteres), `plantilla` opcional y hasta 5 PDFs
+en el campo repetido `archivos` (máximo 10 MB por archivo). La tabla existente
+`respuestas_radicado` guarda la respuesta y `documentos_respuesta` conserva una
+fila por cada PDF; aplica [005_documentos_respuesta.sql](migrations/005_documentos_respuesta.sql)
+una sola vez para crear esta tabla hija. Los documentos nuevos se guardan en
+`uploads/respuestas/`; los documentos recibidos continúan en `uploads/`. Solo administración y funcionarios autorizados
+pueden enviar. La respuesta se registra con el usuario y la fecha, y en una
+transacción actualiza el radicado a `Respondido`, marca la fecha de respuesta y
+agrega el evento al historial. Cada radicado admite una respuesta. Los PDF de
+respuesta usan el mismo control de acceso por dependencia que los adjuntos
+recibidos.
+
+`GET /api/radicados/:numero_radicado/respuesta` devuelve el texto, funcionario,
+fecha, plantilla y listado de PDFs. `GET /uploads/:archivo` descarga cada PDF
+con la misma sesión y validación de dependencia. La vista de ventanilla usa esta
+consulta para mostrar la respuesta sin habilitar la edición del radicado.
+
+La estructura de Tablas de Retención Documental queda pendiente hasta contar
+con la TRD aprobada de la entidad. No se deben inventar series, plazos ni
+disposiciones finales; esos valores definen el calendario y el destino documental.
 
 `PUT /api/radicados/:numero_radicado/estado` recibe JSON:
 

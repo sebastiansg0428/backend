@@ -25,6 +25,11 @@ const uploadDir = path.join(__dirname, 'uploads');
 if (!fs.existsSync(uploadDir)) {
     fs.mkdirSync(uploadDir, { recursive: true });
 }
+// Los archivos que salen con una respuesta tienen su propia carpeta.
+const uploadRespuestasDir = path.join(uploadDir, 'respuestas');
+if (!fs.existsSync(uploadRespuestasDir)) {
+    fs.mkdirSync(uploadRespuestasDir, { recursive: true });
+}
 
 app.use('/api', authRouter);
 app.use('/api', autenticar);
@@ -38,13 +43,23 @@ app.use('/uploads', autenticar, async (req, res, next) => {
             if (!(error instanceof URIError)) throw error;
             return responderError(res, 400, 'La ruta del archivo no es valida.');
         }
-        if (nombreArchivo.includes('/') || nombreArchivo.includes('\\')) {
+        // Se admiten subcarpetas controladas (por ejemplo, "respuestas/archivo.pdf"),
+        // pero nunca rutas que intenten salir de uploads.
+        const rutaNormalizada = path.posix.normalize(nombreArchivo.replace(/\\/g, '/'));
+        const rutaFisica = path.resolve(uploadDir, ...rutaNormalizada.split('/'));
+        const rutaRelativa = path.relative(uploadDir, rutaFisica);
+        if (!nombreArchivo || nombreArchivo.includes('\\') || rutaNormalizada !== nombreArchivo ||
+            rutaRelativa.startsWith('..') || path.isAbsolute(rutaRelativa)) {
             return responderError(res, 404, 'Archivo no encontrado.');
         }
         const filtro = filtroDependencia(req.usuario);
         const [rows] = await pool.execute(
-            `SELECT r.id FROM radicados r WHERE r.ruta_archivo = ? AND ${filtro.sql} LIMIT 1`,
-            [nombreArchivo, ...filtro.valores]
+            `SELECT r.id FROM radicados r
+             LEFT JOIN respuestas_radicado rr ON rr.numero_radicado = r.numero_radicado
+             LEFT JOIN documentos_respuesta dr ON dr.respuesta_id = rr.id
+             WHERE (r.ruta_archivo = ? OR rr.ruta_archivo = ? OR dr.ruta_archivo = ?)
+               AND ${filtro.sql} LIMIT 1`,
+            [nombreArchivo, nombreArchivo, nombreArchivo, ...filtro.valores]
         );
         if (!rows.length) {
             return responderError(res, 404, 'Archivo no encontrado o fuera de tu dependencia.');
@@ -66,7 +81,42 @@ const storage = multer.diskStorage({
     }
 });
 
+// Multer define dónde y con qué nombre se guarda cada respuesta adjunta.
+const storageRespuesta = multer.diskStorage({
+    destination: (req, file, cb) => cb(null, uploadRespuestasDir),
+    filename: (req, file, cb) => {
+        const identificador = Date.now() + '-' + Math.round(Math.random() * 1E9);
+        cb(null, `respuesta-${identificador}.pdf`);
+    }
+});
+
 const upload = multer({ storage: storage });
+const uploadRespuesta = multer({
+    storage: storageRespuesta,
+    limits: { fileSize: 10 * 1024 * 1024 },
+    fileFilter: (req, file, cb) => {
+        const extensionPdf = path.extname(file.originalname).toLowerCase() === '.pdf';
+        if (file.mimetype !== 'application/pdf' || !extensionPdf) {
+            return cb(new Error('El documento de respuesta debe ser un PDF.'));
+        }
+        cb(null, true);
+    }
+});
+
+// Este intermediario traduce los errores de Multer a mensajes claros y evita
+// dejar archivos sueltos si se excede el límite o un archivo no es PDF.
+function recibirArchivosRespuesta(req, res, next) {
+    uploadRespuesta.array('archivos', 5)(req, res, (error) => {
+        if (!error) return next();
+        (req.files || []).forEach(eliminarArchivoSubido);
+        const mensaje = error instanceof multer.MulterError && error.code === 'LIMIT_FILE_COUNT'
+            ? 'Puedes adjuntar máximo 5 archivos PDF.'
+            : error instanceof multer.MulterError && error.code === 'LIMIT_FILE_SIZE'
+                ? 'Cada PDF debe pesar máximo 10 MB.'
+                : error.message || 'No se pudieron procesar los archivos adjuntos.';
+        return responderError(res, 400, mensaje);
+    });
+}
 
 const CATEGORIAS_TRAMITE = new Set([
     'peticion_general',
@@ -574,16 +624,19 @@ app.get('/api/radicados', async (req, res) => {
 app.get('/api/alertas', async (req, res) => {
     try {
         const filtro = filtroDependencia(req.usuario);
+        const esFuncionario = req.usuario.rol === 'funcionario';
         const dependenciaId = req.query.dependencia_id === undefined
             ? null : Number(req.query.dependencia_id);
         if (dependenciaId !== null && (!Number.isInteger(dependenciaId) || dependenciaId < 1)) {
             return responderError(res, 400, 'dependencia_id debe ser un entero positivo.');
         }
-        if (req.usuario.rol === 'funcionario' &&
+        if (esFuncionario &&
             ((dependenciaId !== null && dependenciaId !== req.usuario.dependencia_id) ||
                 (req.query.dependencia !== undefined && req.query.dependencia !== req.usuario.dependencia_nombre))) {
             return responderError(res, 403, 'Solo puedes consultar alertas de tu dependencia.');
         }
+        const dependenciaFiltroId = esFuncionario ? null : dependenciaId;
+        const dependenciaFiltroNombre = esFuncionario ? null : (req.query.dependencia || null);
         const [rows] = await pool.query(
             `SELECT r.*,
                     rt.fecha_recepcion AS termino_fecha_recepcion,
@@ -603,8 +656,8 @@ app.get('/api/alertas', async (req, res) => {
                AND (? IS NULL OR r.dependencia_destino = ?)
              ORDER BY r.fecha_creacion DESC`,
             [
-                ...filtro.valores, dependenciaId, dependenciaId,
-                req.query.dependencia || null, req.query.dependencia || null
+                ...filtro.valores, dependenciaFiltroId, dependenciaFiltroId,
+                dependenciaFiltroNombre, dependenciaFiltroNombre
             ]
         );
         const alertas = rows
@@ -630,6 +683,34 @@ app.get('/api/radicados/:numero_radicado/historial', autorizarRadicado, async (r
     } catch (error) {
         console.error('Error al consultar el historial del radicado:', error);
         return responderError(res, 500, 'Error interno al consultar el historial.');
+    }
+});
+
+// Ventanilla puede consultar la respuesta para orientar al ciudadano;
+// autorizarRadicado mantiene a los funcionarios limitados a su dependencia.
+app.get('/api/radicados/:numero_radicado/respuesta', autorizarRadicado, async (req, res) => {
+    try {
+        const [respuestas] = await pool.execute(
+            `SELECT rr.id, rr.numero_radicado, rr.contenido, rr.plantilla,
+                    rr.fecha_envio, u.nombre AS funcionario_nombre
+             FROM respuestas_radicado rr
+             LEFT JOIN usuarios u ON u.id = rr.usuario_id
+             WHERE rr.numero_radicado = ? LIMIT 1`,
+            [req.params.numero_radicado]
+        );
+        if (!respuestas.length) {
+            return responderError(res, 404, 'Este radicado todavía no tiene una respuesta institucional.');
+        }
+        const respuesta = respuestas[0];
+        const [documentos] = await pool.execute(
+            `SELECT id, nombre_archivo, ruta_archivo, tamano_bytes
+             FROM documentos_respuesta WHERE respuesta_id = ? ORDER BY id`,
+            [respuesta.id]
+        );
+        return res.json({ success: true, respuesta: { ...respuesta, documentos } });
+    } catch (error) {
+        console.error('Error al consultar respuesta institucional:', error);
+        return responderError(res, 500, 'No se pudo consultar la respuesta institucional.');
     }
 });
 
@@ -732,6 +813,94 @@ app.post(
 );
 
 // Ruta para actualizar el estado de un radicado
+app.post(
+    '/api/radicados/:numero_radicado/respuesta',
+    permitirRoles('administrador', 'funcionario'),
+    recibirArchivosRespuesta,
+    async (req, res) => {
+        const numeroRadicado = req.params.numero_radicado;
+        const contenido = typeof req.body.contenido === 'string' ? req.body.contenido.trim() : '';
+        const plantilla = typeof req.body.plantilla === 'string' ? req.body.plantilla.trim() : '';
+        if (contenido.length < 10 || contenido.length > 10000) {
+            (req.files || []).forEach(eliminarArchivoSubido);
+            return responderError(res, 400, 'La respuesta debe tener entre 10 y 10.000 caracteres.');
+        }
+        let connection;
+        try {
+            connection = await pool.getConnection();
+            // Guardamos respuesta, PDFs, cambio de estado y fecha en una sola
+            // transacción: si una parte falla, no queda una respuesta incompleta.
+            await connection.beginTransaction();
+            const filtro = filtroDependencia(req.usuario, 'r');
+            const [radicados] = await connection.execute(
+                `SELECT r.estado FROM radicados r WHERE r.numero_radicado = ? AND ${filtro.sql} FOR UPDATE`,
+                [numeroRadicado, ...filtro.valores]
+            );
+            if (!radicados.length) {
+                await connection.rollback(); (req.files || []).forEach(eliminarArchivoSubido);
+                return responderError(res, 404, 'Radicado no encontrado o fuera de tu dependencia.');
+            }
+            if (String(radicados[0].estado || '').toLowerCase() === 'respondido') {
+                await connection.rollback(); (req.files || []).forEach(eliminarArchivoSubido);
+                return responderError(res, 409, 'Este radicado ya fue respondido.');
+            }
+            const [existente] = await connection.execute(
+                'SELECT id FROM respuestas_radicado WHERE numero_radicado = ? LIMIT 1', [numeroRadicado]
+            );
+            if (existente.length) {
+                await connection.rollback(); (req.files || []).forEach(eliminarArchivoSubido);
+                return responderError(res, 409, 'Ya existe una respuesta registrada para este radicado.');
+            }
+            const [resultadoRespuesta] = await connection.execute(
+                `INSERT INTO respuestas_radicado (numero_radicado, contenido, plantilla, nombre_archivo, ruta_archivo, usuario_id)
+                 VALUES (?, ?, ?, ?, ?, ?)`,
+                [numeroRadicado, contenido, plantilla || null, req.files?.[0]?.originalname || null,
+                    req.files?.[0] ? `respuestas/${req.files[0].filename}` : null, req.usuario.id]
+            );
+            const idRespuesta = resultadoRespuesta.insertId;
+            // Cada PDF queda en su propia fila y relacionado con la respuesta creada.
+            for (const archivo of req.files || []) {
+                await connection.execute(
+                    `INSERT INTO documentos_respuesta (respuesta_id, nombre_archivo, ruta_archivo, tipo_mime, tamano_bytes)
+                     VALUES (?, ?, ?, ?, ?)`,
+                    [idRespuesta, archivo.originalname, `respuestas/${archivo.filename}`, archivo.mimetype, archivo.size]
+                );
+            }
+            await connection.execute("UPDATE radicados SET estado = 'Respondido' WHERE numero_radicado = ?", [numeroRadicado]);
+            await connection.execute(
+                `UPDATE radicado_terminos SET fecha_respuesta = COALESCE(fecha_respuesta, CURRENT_TIMESTAMP) WHERE numero_radicado = ?`,
+                [numeroRadicado]
+            );
+            await connection.execute(
+                `INSERT INTO historial_radicado (numero_radicado, campo_modificado, valor_anterior, valor_nuevo, usuario, motivo)
+                 VALUES (?, 'estado', ?, 'Respondido', ?, 'Respuesta institucional enviada')`,
+                [numeroRadicado, radicados[0].estado || 'Recibido', String(req.usuario.id)]
+            );
+            await connection.commit();
+            const fechaRespuesta = new Date().toISOString();
+            // La respuesta termina el trámite; devolvemos el semáforo ya recalculado
+            // para que la tabla no conserve el valor anterior de React.
+            const semaforo = calcularSemaforoBackend({ estado: 'Respondido', fecha_respuesta: fechaRespuesta });
+            return res.status(201).json({
+                success: true,
+                estado: 'Respondido',
+                fecha_respuesta: fechaRespuesta,
+                semaforo
+            });
+        } catch (error) {
+            if (connection) await connection.rollback();
+            // MySQL no administra los archivos del disco; por eso los borramos
+            // manualmente cuando la transacción no se pudo completar.
+            (req.files || []).forEach(eliminarArchivoSubido);
+            if (error instanceof multer.MulterError) return responderError(res, 400, 'El archivo supera el límite de 10 MB o no se pudo procesar.');
+            console.error('Error al registrar respuesta institucional:', error);
+            return responderError(res, 500, 'Error interno al guardar la respuesta.');
+        } finally {
+            if (connection) connection.release();
+        }
+    }
+);
+
 app.put(
     '/api/radicados/:numero_radicado/estado',
     permitirRoles('administrador', 'funcionario'),

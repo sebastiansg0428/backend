@@ -210,7 +210,7 @@ test('administrador gestiona catalogos con baja logica y conserva permisos, refe
     const nombreArchivo = `catalogo-${randomUUID()}.pdf`;
     const archivoRadicado = async campos => {
         const form = new FormData();
-        form.append('archivo', new Blob(['%PDF-1.4\n%%EOF'], { type: 'application/pdf' }), nombreArchivo);
+        form.append('archivos', new Blob(['%PDF-1.4\n%%EOF'], { type: 'application/pdf' }), nombreArchivo);
         for (const [campo, valor] of Object.entries({
             asunto_documento: 'Prueba', remitente_nombre: 'Remitente', remitente_documento: '123', ...campos
         })) form.append(campo, String(valor));

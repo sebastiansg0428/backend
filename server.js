@@ -3,6 +3,7 @@ const multer = require('multer');
 const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
+const crypto = require('crypto');
 const pool = require('./db');
 const calcularSemaforoBackend = require('./semaforo');
 const { agregarDias, obtenerFechaLocal } = require('./semaforo');
@@ -55,11 +56,12 @@ app.use('/uploads', autenticar, async (req, res, next) => {
         const filtro = filtroDependencia(req.usuario);
         const [rows] = await pool.execute(
             `SELECT r.id FROM radicados r
+             LEFT JOIN documentos_radicado ddoc ON ddoc.numero_radicado = r.numero_radicado
              LEFT JOIN respuestas_radicado rr ON rr.numero_radicado = r.numero_radicado
              LEFT JOIN documentos_respuesta dr ON dr.respuesta_id = rr.id
-             WHERE (r.ruta_archivo = ? OR rr.ruta_archivo = ? OR dr.ruta_archivo = ?)
+             WHERE (r.ruta_archivo = ? OR ddoc.ruta_archivo = ? OR rr.ruta_archivo = ? OR dr.ruta_archivo = ?)
                AND ${filtro.sql} LIMIT 1`,
-            [nombreArchivo, nombreArchivo, nombreArchivo, ...filtro.valores]
+            [nombreArchivo, nombreArchivo, nombreArchivo, nombreArchivo, ...filtro.valores]
         );
         if (!rows.length) {
             return responderError(res, 404, 'Archivo no encontrado o fuera de tu dependencia.');
@@ -76,8 +78,7 @@ const storage = multer.diskStorage({
         cb(null, uploadDir);
     },
     filename: (req, file, cb) => {
-        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-        cb(null, uniqueSuffix + '-' + file.originalname);
+        cb(null, `${crypto.randomUUID()}.pdf`);
     }
 });
 
@@ -85,23 +86,37 @@ const storage = multer.diskStorage({
 const storageRespuesta = multer.diskStorage({
     destination: (req, file, cb) => cb(null, uploadRespuestasDir),
     filename: (req, file, cb) => {
-        const identificador = Date.now() + '-' + Math.round(Math.random() * 1E9);
-        cb(null, `respuesta-${identificador}.pdf`);
+        cb(null, `respuesta-${crypto.randomUUID()}.pdf`);
     }
 });
 
-const upload = multer({ storage: storage });
-const uploadRespuesta = multer({
-    storage: storageRespuesta,
-    limits: { fileSize: 10 * 1024 * 1024 },
-    fileFilter: (req, file, cb) => {
-        const extensionPdf = path.extname(file.originalname).toLowerCase() === '.pdf';
-        if (file.mimetype !== 'application/pdf' || !extensionPdf) {
-            return cb(new Error('El documento de respuesta debe ser un PDF.'));
-        }
-        cb(null, true);
+function filtroPdf(req, file, cb) {
+    const extensionPdf = path.extname(file.originalname).toLowerCase() === '.pdf';
+    const mimeValido = !file.mimetype || file.mimetype === 'application/pdf';
+    if (!extensionPdf || !mimeValido) {
+        return cb(new Error('Cada documento adjunto debe ser un PDF.'));
     }
-});
+    return cb(null, true);
+}
+
+const opcionesCargaPdf = {
+    limits: { fileSize: 10 * 1024 * 1024, files: 5 },
+    fileFilter: filtroPdf
+};
+const upload = multer({ storage, ...opcionesCargaPdf });
+const uploadRespuesta = multer({ storage: storageRespuesta, ...opcionesCargaPdf });
+
+async function esArchivoPdfValido(archivo) {
+    if (!archivo || archivo.size < 5) return false;
+    const manejador = await fs.promises.open(archivo.path, 'r');
+    try {
+        const cabecera = Buffer.alloc(Math.min(archivo.size, 1024));
+        const { bytesRead } = await manejador.read(cabecera, 0, cabecera.length, 0);
+        return cabecera.subarray(0, bytesRead).includes(Buffer.from('%PDF-', 'ascii'));
+    } finally {
+        await manejador.close();
+    }
+}
 
 // Este intermediario traduce los errores de Multer a mensajes claros y evita
 // dejar archivos sueltos si se excede el límite o un archivo no es PDF.
@@ -115,6 +130,31 @@ function recibirArchivosRespuesta(req, res, next) {
                 ? 'Cada PDF debe pesar máximo 10 MB.'
                 : error.message || 'No se pudieron procesar los archivos adjuntos.';
         return responderError(res, 400, mensaje);
+    });
+}
+
+function recibirArchivosRadicacion(req, res, next) {
+    upload.fields([
+        { name: 'archivos', maxCount: 5 },
+        { name: 'archivo', maxCount: 1 }
+    ])(req, res, (error) => {
+        const archivosPorCampo = req.files && !Array.isArray(req.files) ? req.files : {};
+        const archivos = Array.isArray(req.files)
+            ? req.files
+            : [...(archivosPorCampo.archivos || []), ...(archivosPorCampo.archivo || [])];
+        if (error || archivos.length > 5) {
+            archivos.forEach(eliminarArchivoSubido);
+            const limiteSuperado = archivos.length > 5 || error?.code === 'LIMIT_FILE_COUNT';
+            const limiteTamano = error?.code === 'LIMIT_FILE_SIZE';
+            const mensaje = limiteSuperado
+                ? 'Puedes adjuntar máximo 5 archivos PDF.'
+                : limiteTamano
+                    ? 'Cada PDF debe pesar máximo 10 MB.'
+                    : error.message || 'No se pudieron procesar los archivos adjuntos.';
+            return responderError(res, 400, mensaje);
+        }
+        req.files = archivos;
+        return next();
     });
 }
 
@@ -222,10 +262,17 @@ function presentarRadicado(radicado) {
 }
 
 // Ruta POST principal para registrar el radicado
-app.post('/api/radicados', permitirRoles('administrador', 'ventanilla'), upload.single('archivo'), async (req, res) => {
+app.post('/api/radicados', permitirRoles('administrador', 'ventanilla'), recibirArchivosRadicacion, async (req, res) => {
     try {
-        if (!req.file) {
-            return responderError(res, 400, 'El archivo PDF adjunto es obligatorio.');
+        const archivos = req.files || [];
+        if (!archivos.length) {
+            return responderError(res, 400, 'Adjunta al menos un archivo PDF.');
+        }
+        for (const archivo of archivos) {
+            if (!await esArchivoPdfValido(archivo)) {
+                archivos.forEach(eliminarArchivoSubido);
+                return responderError(res, 400, 'Uno o más archivos no contienen un PDF válido.');
+            }
         }
 
         // Extracción limpia de los campos del formulario
@@ -249,7 +296,7 @@ app.post('/api/radicados', permitirRoles('administrador', 'ventanilla'), upload.
 
         // Validación obligatoria para evitar errores de base de datos
         if (!asunto_documento || !remitente_nombre || !remitente_documento) {
-            eliminarArchivoSubido(req.file);
+            archivos.forEach(eliminarArchivoSubido);
             return responderError(res, 400, 'Faltan campos obligatorios (Asunto, Nombre o Documento del remitente).');
         }
 
@@ -257,7 +304,7 @@ app.post('/api/radicados', permitirRoles('administrador', 'ventanilla'), upload.
         if (dependencia_destino_id !== undefined) {
             const id = Number(dependencia_destino_id);
             if (!Number.isInteger(id) || id < 1) {
-                eliminarArchivoSubido(req.file);
+                archivos.forEach(eliminarArchivoSubido);
                 return responderError(res, 400, 'dependencia_destino_id debe ser un entero positivo.');
             }
             const [rows] = await pool.execute('SELECT id, nombre FROM dependencias WHERE id = ? AND activo = 1', [id]);
@@ -270,7 +317,7 @@ app.post('/api/radicados', permitirRoles('administrador', 'ventanilla'), upload.
             dependencia = rows[0];
         }
         if (!dependencia) {
-            eliminarArchivoSubido(req.file);
+            archivos.forEach(eliminarArchivoSubido);
             return responderError(res, 422, 'Selecciona una dependencia activa del catalogo.');
         }
 
@@ -278,7 +325,7 @@ app.post('/api/radicados', permitirRoles('administrador', 'ventanilla'), upload.
             tipo_tramite_id &&
             (!Number.isInteger(Number(tipo_tramite_id)) || Number(tipo_tramite_id) < 1)
         ) {
-            eliminarArchivoSubido(req.file);
+            archivos.forEach(eliminarArchivoSubido);
             return responderError(res, 400, 'tipo_tramite_id debe ser un entero positivo.');
         }
 
@@ -289,7 +336,7 @@ app.post('/api/radicados', permitirRoles('administrador', 'ventanilla'), upload.
             fecha: fechaRecepcion
         });
         if (!termino) {
-            eliminarArchivoSubido(req.file);
+            archivos.forEach(eliminarArchivoSubido);
             return responderError(
                 res,
                 422,
@@ -297,14 +344,6 @@ app.post('/api/radicados', permitirRoles('administrador', 'ventanilla'), upload.
             );
         }
         const fechaLimite = agregarDias(fechaRecepcion, termino.dias, termino.tipo_dias);
-        // Generar número de radicado único (Ej: RAD-20260930-4821)
-        const fechaHoy = fechaRecepcion.replace(/-/g, '');
-        const numeroRadicado = `RAD-${fechaHoy}-${Math.floor(1000 + Math.random() * 9000)}`;
-
-        const nombreArchivoOriginal = req.file.originalname;
-        const rutaArchivo = req.file.filename;
-
-        // Query SQL con valores protegidos (Sanitizados contra SQL Injection)
         const tiempoRespuesta = obtenerTiempoRespuesta(termino);
         const query = `
             INSERT INTO radicados 
@@ -315,31 +354,66 @@ app.post('/api/radicados', permitirRoles('administrador', 'ventanilla'), upload.
                     ?, ?, ?, ?, ?)
         `;
 
-        const values = [
-            numeroRadicado,
-            tipo_recepcion || 'Digital',
-            tipo_comunicacion,
-            termino.nombre,
-            tiempoRespuesta,
-            remitente_nombre,
-            remitente_documento,
-            remitente_entidad || null,
-            remitente_nit || null,
-            remitente_telefono || 'No especificado',
-            remitente_email || null,
-            numero_folios || 1,
-            dependencia.nombre,
-            asunto_documento,
-            req.usuario.nombre,
-            nombreArchivoOriginal,
-            rutaArchivo,
-            dependencia.id
-        ];
-
         const connection = await pool.getConnection();
+        let numeroRadicado;
         try {
             await connection.beginTransaction();
+            const anoRadicacion = Number(fechaRecepcion.slice(0, 4));
+            await connection.execute(
+                `INSERT INTO secuencias_radicado (ano, ultimo_numero)
+                 VALUES (?, 0) ON DUPLICATE KEY UPDATE ano = VALUES(ano)`,
+                [anoRadicacion]
+            );
+            const [secuencias] = await connection.execute(
+                'SELECT ultimo_numero FROM secuencias_radicado WHERE ano = ? FOR UPDATE',
+                [anoRadicacion]
+            );
+            let consecutivo = Number(secuencias[0].ultimo_numero) + 1;
+            const fechaNumeroRadicado = fechaRecepcion.replace(/-/g, '');
+            while (true) {
+                numeroRadicado = `RAD-${fechaNumeroRadicado}-${String(consecutivo).padStart(4, '0')}`;
+                const [coincidencias] = await connection.execute(
+                    'SELECT 1 FROM radicados WHERE numero_radicado = ? LIMIT 1',
+                    [numeroRadicado]
+                );
+                if (!coincidencias.length) break;
+                consecutivo++;
+            }
+            await connection.execute(
+                'UPDATE secuencias_radicado SET ultimo_numero = ? WHERE ano = ?',
+                [consecutivo, anoRadicacion]
+            );
+
+            const primerArchivo = archivos[0];
+            const values = [
+                numeroRadicado,
+                tipo_recepcion || 'Digital',
+                tipo_comunicacion,
+                termino.nombre,
+                tiempoRespuesta,
+                remitente_nombre,
+                remitente_documento,
+                remitente_entidad || null,
+                remitente_nit || null,
+                remitente_telefono || 'No especificado',
+                remitente_email || null,
+                numero_folios || 1,
+                dependencia.nombre,
+                asunto_documento,
+                req.usuario.nombre,
+                primerArchivo.originalname,
+                primerArchivo.filename,
+                dependencia.id
+            ];
             await connection.execute(query, values);
+            for (const archivo of archivos) {
+                await connection.execute(
+                    `INSERT INTO documentos_radicado
+                        (numero_radicado, nombre_archivo, ruta_archivo, tipo_mime, tamano_bytes)
+                     VALUES (?, ?, ?, ?, ?)`,
+                    [numeroRadicado, archivo.originalname, archivo.filename, archivo.mimetype, archivo.size]
+                );
+            }
             await connection.execute(
                 `INSERT INTO radicado_terminos
                     (numero_radicado, tipo_tramite_id, termino_legal_id, fecha_recepcion,
@@ -397,9 +471,7 @@ app.post('/api/radicados', permitirRoles('administrador', 'ventanilla'), upload.
     } catch (error) {
         console.error('❌ Error crítico al procesar el radicado:', error);
 
-        if (req.file) {
-            eliminarArchivoSubido(req.file);
-        }
+        (req.files || []).forEach(eliminarArchivoSubido);
 
         return responderError(res, 500, 'Error interno del servidor al guardar el registro.');
     }
@@ -468,8 +540,10 @@ app.put('/api/tipos-tramite/:id', protegerAdministracion, async (req, res, next)
             [codigo, nombre.trim(), categoria_general, orden ?? null, id]
         );
         if (!result.affectedRows) return responderError(res, 404, 'Tipo de tramite no encontrado.');
-        return res.json({ success: true, tipo_tramite: { id, codigo, nombre: nombre.trim(), categoria_general },
-            message: 'Tipo de tramite actualizado sin alterar los terminos aplicados.' });
+        return res.json({
+            success: true, tipo_tramite: { id, codigo, nombre: nombre.trim(), categoria_general },
+            message: 'Tipo de tramite actualizado sin alterar los terminos aplicados.'
+        });
     } catch (error) { next(error); }
 });
 
@@ -749,6 +823,38 @@ app.get('/api/radicados/:numero_radicado/historial', autorizarRadicado, async (r
     }
 });
 
+app.get('/api/radicados/:numero_radicado/documentos', autorizarRadicado, async (req, res) => {
+    try {
+        const [documentos] = await pool.execute(
+            `SELECT id, nombre_archivo, ruta_archivo, tipo_mime, tamano_bytes
+             FROM documentos_radicado WHERE numero_radicado = ? ORDER BY id`,
+            [req.params.numero_radicado]
+        );
+        if (documentos.length) {
+            return res.json({ success: true, documentos });
+        }
+
+        // Compatibilidad con radicados creados antes de la tabla de adjuntos múltiples.
+        const [anteriores] = await pool.execute(
+            `SELECT nombre_archivo_original AS nombre_archivo, ruta_archivo
+             FROM radicados WHERE numero_radicado = ? AND ruta_archivo IS NOT NULL`,
+            [req.params.numero_radicado]
+        );
+        return res.json({
+            success: true,
+            documentos: anteriores.map((archivo, indice) => ({
+                id: `anterior-${indice}`,
+                ...archivo,
+                tipo_mime: 'application/pdf',
+                tamano_bytes: null
+            }))
+        });
+    } catch (error) {
+        console.error('Error al consultar documentos del radicado:', error);
+        return responderError(res, 500, 'Error interno al consultar los documentos.');
+    }
+});
+
 // Ventanilla puede consultar la respuesta para orientar al ciudadano;
 // autorizarRadicado mantiene a los funcionarios limitados a su dependencia.
 app.get('/api/radicados/:numero_radicado/respuesta', autorizarRadicado, async (req, res) => {
@@ -887,6 +993,12 @@ app.post(
         if (contenido.length < 10 || contenido.length > 10000) {
             (req.files || []).forEach(eliminarArchivoSubido);
             return responderError(res, 400, 'La respuesta debe tener entre 10 y 10.000 caracteres.');
+        }
+        for (const archivo of req.files || []) {
+            if (!await esArchivoPdfValido(archivo)) {
+                (req.files || []).forEach(eliminarArchivoSubido);
+                return responderError(res, 400, 'Uno o más archivos no contienen un PDF válido.');
+            }
         }
         let connection;
         try {

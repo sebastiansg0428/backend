@@ -198,7 +198,7 @@ test('RBAC HTTP aplica permisos en listas, alertas, archivos, historial y escrit
         }
         const crear = await pedir('/api/radicados', id, { method: 'POST', body: '{}' });
         assert.equal(crear.status, 400);
-        assert.equal((await crear.json()).message, 'El archivo PDF adjunto es obligatorio.');
+        assert.equal((await crear.json()).message, 'Adjunta al menos un archivo PDF.');
     }
     assert.equal((await pedir('/api/radicados/RAD-H/historial', 13)).status, 404);
     assert.equal((await pedir('/api/radicados/RAD-P/historial', 13)).status, 200);

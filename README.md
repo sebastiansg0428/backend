@@ -123,6 +123,13 @@ administrador; acepta solo `0` o `1`. Las listas conservan las claves
 `dependencias` y `tipos_tramite`, y agregan `activo` a cada elemento. Las consultas
 individuales devuelven `{ success, dependencia }` o `{ success, tipo_tramite }`.
 
+Antes de habilitar la radicación de varios archivos, aplica una sola vez
+[008_secuencia_y_documentos_radicado.sql](migrations/008_secuencia_y_documentos_radicado.sql).
+La migración crea el contador anual y la tabla de documentos asociados a cada
+radicado. Conserva los adjuntos actuales y sincroniza el contador con radicados
+que ya tengan el formato `RAD-AAAA-####` o `RAD-AAAAMMDD-####`. Respalda la base de datos y revisa el
+esquema antes de aplicarla.
+
 Para crear o editar una dependencia:
 
 ```json
@@ -248,14 +255,24 @@ su existencia; una accion de rol no permitido devuelve 403; sin sesion, 401.
   `radicados.dependencia_destino_id = req.usuario.dependencia_id`, ignorando
   parametros de dependencia o rol del cliente. Sin una asignacion valida, las
   rutas protegidas devuelven 403 con `{ success: false, message }`, sin datos.
-- `GET /api/radicados/:numero_radicado/historial`, `GET`/`HEAD /uploads/:archivo`
+- `GET /api/radicados/:numero_radicado/historial`,
+  `GET /api/radicados/:numero_radicado/documentos`, `GET`/`HEAD /uploads/:archivo`
   y `PUT /api/radicados/:numero_radicado/estado` comprueban la misma pertenencia.
-  No existe una ruta independiente `GET /api/radicados/:numero_radicado` ni una
-  ruta de adjuntos bajo `/api/radicados`; los PDFs se consultan en `/uploads`.
+  No existe una ruta independiente `GET /api/radicados/:numero_radicado`.
+  `GET /api/radicados/:numero_radicado/documentos` lista los metadatos; el PDF
+  se descarga desde `/uploads` con autenticación.
 - `POST /api/radicados`: envia `dependencia_destino_id` en FormData.
   Temporalmente se admite `dependencia_destino` por nombre exacto de catalogo.
   El servidor guarda ID y nombre de la misma oficina y usa al usuario autenticado
   como receptor, ignorando un nombre de funcionario falsificado.
+
+La radicación acepta de 1 a 5 partes `archivos` (también conserva el campo
+singular `archivo` para la interfaz anterior), con un máximo de 10 MB por PDF.
+Los radicados nuevos usan el formato `RAD-AAAAMMDD-####`, por ejemplo
+`RAD-20261013-0001`. El contador vuelve a `0001` en cada año y se incrementa
+dentro de la transacción MySQL para evitar números duplicados en solicitudes
+simultáneas. Si un número coincide con un radicado histórico, el sistema avanza
+al siguiente consecutivo disponible.
 
 Los radicados antiguos sin dependencia asignada nunca aparecen a funcionarios.
 Los eventos de creacion, estado y ampliacion identifican al actor con su ID en

@@ -1,6 +1,6 @@
 const express = require('express');
 const multer = require('multer');
-const cors = require('cors');
+const crearMiddlewareCors = require('./cors');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
@@ -18,7 +18,7 @@ const app = express();
 const PORT = Number(process.env.PORT || 3000);
 
 // Middlewares esenciales
-app.use(cors());
+app.use(crearMiddlewareCors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
@@ -60,9 +60,9 @@ app.use('/uploads', autenticar, async (req, res, next) => {
              LEFT JOIN documentos_radicado ddoc ON ddoc.numero_radicado = r.numero_radicado
              LEFT JOIN respuestas_radicado rr ON rr.numero_radicado = r.numero_radicado
              LEFT JOIN documentos_respuesta dr ON dr.respuesta_id = rr.id
-             WHERE (r.ruta_archivo = ? OR ddoc.ruta_archivo = ? OR rr.ruta_archivo = ? OR dr.ruta_archivo = ?)
+             WHERE (ddoc.ruta_archivo = ? OR rr.ruta_archivo = ? OR dr.ruta_archivo = ?)
                AND ${filtro.sql} LIMIT 1`,
-            [nombreArchivo, nombreArchivo, nombreArchivo, nombreArchivo, ...filtro.valores]
+            [nombreArchivo, nombreArchivo, nombreArchivo, ...filtro.valores]
         );
         if (!rows.length) {
             return responderError(res, 404, 'Archivo no encontrado o fuera de tu dependencia.');
@@ -177,6 +177,24 @@ const CATEGORIAS_TRAMITE = new Set([
 
 function responderError(res, status, message) {
     return res.status(status).json({ success: false, message });
+}
+
+function fechaHoraBogota(fecha) {
+    const partes = new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'America/Bogota',
+        year: 'numeric', month: '2-digit', day: '2-digit',
+        hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23'
+    }).formatToParts(fecha).reduce((resultado, parte) => {
+        resultado[parte.type] = parte.value;
+        return resultado;
+    }, {});
+    return `${partes.year}-${partes.month}-${partes.day} ${partes.hour}:${partes.minute}:${partes.second}`;
+}
+
+function fechaHoraLegibleBogota(fecha) {
+    return new Intl.DateTimeFormat('es-CO', {
+        timeZone: 'America/Bogota', dateStyle: 'medium', timeStyle: 'medium'
+    }).format(fecha);
 }
 
 function eliminarArchivoSubido(archivo) {
@@ -309,6 +327,32 @@ app.post('/api/radicados', permitirRoles('administrador', 'ventanilla'), recibir
             return responderError(res, 400, 'Faltan campos obligatorios (Asunto, Nombre o Documento del remitente).');
         }
 
+        const validarCantidad = (valor, minimo, maximo, predeterminado) => {
+            if (valor === undefined || valor === '') return predeterminado;
+            if (!/^\d+$/.test(String(valor))) return null;
+            const cantidad = Number(valor);
+            return Number.isSafeInteger(cantidad) && cantidad >= minimo && cantidad <= maximo
+                ? cantidad
+                : null;
+        };
+        const folios = validarCantidad(numero_folios, 1, 2147483647, 1);
+        if (folios === null) {
+            archivos.forEach(eliminarArchivoSubido);
+            return responderError(res, 400, 'El número de folios debe ser una cantidad entera positiva.');
+        }
+        // “Entrada” se conserva para clientes anteriores; el formulario actual usa Externa/Interna.
+        if (!['Externa', 'Interna', 'Entrada'].includes(tipo_comunicacion)) {
+            archivos.forEach(eliminarArchivoSubido);
+            return responderError(res, 400, 'Selecciona una comunicación externa o interna.');
+        }
+        const tipoRecepcion = tipo_recepcion === undefined || tipo_recepcion === ''
+            ? 'Digital'
+            : tipo_recepcion;
+        if (!['Digital', 'Fisico'].includes(tipoRecepcion)) {
+            archivos.forEach(eliminarArchivoSubido);
+            return responderError(res, 400, 'El canal de recepción debe ser físico o digital.');
+        }
+
         let dependencia;
         if (dependencia_destino_id !== undefined) {
             const id = Number(dependencia_destino_id);
@@ -338,7 +382,9 @@ app.post('/api/radicados', permitirRoles('administrador', 'ventanilla'), recibir
             return responderError(res, 400, 'tipo_tramite_id debe ser un entero positivo.');
         }
 
-        const fechaRecepcion = obtenerFechaLocal(new Date(), 'fecha_recepcion');
+        const instanteRecepcion = new Date();
+        const fechaRecepcion = obtenerFechaLocal(instanteRecepcion, 'fecha_recepcion');
+        const fechaHoraRecepcion = fechaHoraBogota(instanteRecepcion);
         const termino = await obtenerTerminoVigente({
             tipoTramiteId: tipo_tramite_id ? Number(tipo_tramite_id) : null,
             tipoDocumento: tipo_documento,
@@ -356,11 +402,10 @@ app.post('/api/radicados', permitirRoles('administrador', 'ventanilla'), recibir
         const tiempoRespuesta = obtenerTiempoRespuesta(termino);
         const query = `
             INSERT INTO radicados 
-            (numero_radicado, tipo_recepcion, tipo_comunicacion, tipo_documento, tiempo_de_respuesta, remitente_nombre, remitente_documento, remitente_entidad, remitente_nit, remitente_telefono, remitente_email, numero_folios, dependencia_destino, asunto_documento, usuario_recibe, nombre_archivo_original, ruta_archivo, dependencia_destino_id)
+            (numero_radicado, tipo_recepcion, tipo_comunicacion, tipo_documento, tiempo_de_respuesta, remitente_nombre, remitente_documento, remitente_entidad, remitente_nit, remitente_telefono, remitente_email, numero_folios, fecha_hora_recepcion, dependencia_destino, asunto_documento, usuario_recibe, dependencia_destino_id)
             VALUES (?, ?, ?, ?, ?,
-                    ?, ?, ?, ?,
-                    ?, ?, ?, ?,
-                    ?, ?, ?, ?, ?)
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                    ?, ?, ?)
         `;
 
         const connection = await pool.getConnection();
@@ -393,10 +438,9 @@ app.post('/api/radicados', permitirRoles('administrador', 'ventanilla'), recibir
                 [consecutivo, anoRadicacion]
             );
 
-            const primerArchivo = archivos[0];
             const values = [
                 numeroRadicado,
-                tipo_recepcion || 'Digital',
+                tipoRecepcion,
                 tipo_comunicacion,
                 termino.nombre,
                 tiempoRespuesta,
@@ -406,12 +450,11 @@ app.post('/api/radicados', permitirRoles('administrador', 'ventanilla'), recibir
                 remitente_nit || null,
                 remitente_telefono || 'No especificado',
                 remitente_email || null,
-                numero_folios || 1,
+                folios,
+                fechaHoraRecepcion,
                 dependencia.nombre,
                 asunto_documento,
                 req.usuario.nombre,
-                primerArchivo.originalname,
-                primerArchivo.filename,
                 dependencia.id
             ];
             await connection.execute(query, values);
@@ -469,6 +512,9 @@ app.post('/api/radicados', permitirRoles('administrador', 'ventanilla'), recibir
             message: 'Radicado generado y guardado exitosamente.',
             radicado: numeroRadicado,
             usuario_recibe: req.usuario.nombre,
+            fecha_hora_recepcion: fechaHoraRecepcion,
+            fecha_hora_recepcion_legible: fechaHoraLegibleBogota(instanteRecepcion),
+            dependencia_destino: dependencia.nombre,
             termino: {
                 dias: termino.dias,
                 tipo_dias: termino.tipo_dias,
@@ -839,25 +885,7 @@ app.get('/api/radicados/:numero_radicado/documentos', autorizarRadicado, async (
              FROM documentos_radicado WHERE numero_radicado = ? ORDER BY id`,
             [req.params.numero_radicado]
         );
-        if (documentos.length) {
-            return res.json({ success: true, documentos });
-        }
-
-        // Compatibilidad con radicados creados antes de la tabla de adjuntos múltiples.
-        const [anteriores] = await pool.execute(
-            `SELECT nombre_archivo_original AS nombre_archivo, ruta_archivo
-             FROM radicados WHERE numero_radicado = ? AND ruta_archivo IS NOT NULL`,
-            [req.params.numero_radicado]
-        );
-        return res.json({
-            success: true,
-            documentos: anteriores.map((archivo, indice) => ({
-                id: `anterior-${indice}`,
-                ...archivo,
-                tipo_mime: 'application/pdf',
-                tamano_bytes: null
-            }))
-        });
+        return res.json({ success: true, documentos });
     } catch (error) {
         console.error('Error al consultar documentos del radicado:', error);
         return responderError(res, 500, 'Error interno al consultar los documentos.');

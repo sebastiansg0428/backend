@@ -1,5 +1,34 @@
 # Backend de Ventanilla Unica
 
+## Campos de recepción documental
+
+Antes de iniciar esta versión, respalda la base de datos y aplica una sola vez
+[011_campos_recepcion_documental.sql](migrations/011_campos_recepcion_documental.sql).
+La migración agrega a `radicados` el tipo de movimiento, el número de copias,
+la declaración de firma y la fecha/hora de recepción. Rellena la fecha/hora de
+los registros existentes a partir de `fecha_creacion`; no altera radicados,
+adjuntos ni términos históricos. Revisa que las columnas no existan antes de
+ejecutarla y reinicia el backend después de aplicarla.
+
+La migración [012_retirar_copias_y_declaracion_firma.sql](migrations/012_retirar_copias_y_declaracion_firma.sql)
+retira `numero_copias` y `declara_firma` de `radicados`; conserva `numero_folios`.
+Aplica 012 una sola vez después de 011, con respaldo previo. Si una instalación
+nueva aplica toda la secuencia, también debe ejecutar ambas migraciones en orden.
+
+La migración [013_normalizar_adjuntos_radicado.sql](migrations/013_normalizar_adjuntos_radicado.sql)
+consolida los PDFs de radicación en `documentos_radicado`. Copia primero los
+adjuntos antiguos que falten (su tamaño queda `NULL` si no existe metadato) y
+después elimina `nombre_archivo_original` y `ruta_archivo` de `radicados`.
+Ejecuta 013 una sola vez, después de 012 y con respaldo previo. Para instalaciones
+nuevas, aplica las migraciones en orden. Aplica ambas antes de iniciar el backend
+con esta versión, porque la ruta y el nombre del archivo ya no se escriben en
+`radicados`.
+
+La migración [014_retirar_tipo_movimiento.sql](migrations/014_retirar_tipo_movimiento.sql)
+elimina `tipo_movimiento`; `estado` conserva el seguimiento de recepción y trámite.
+Ejecuta 014 una sola vez, después de 013 y con respaldo previo. Para instalaciones
+nuevas, aplica toda la secuencia en orden.
+
 ## Ejecutar y probar
 
 ```powershell
@@ -9,6 +38,35 @@ npm test
 
 Reinicia el proceso Node.js despues de modificar el backend; `npm start` no
 recarga los archivos automaticamente.
+
+## Origenes permitidos (CORS)
+
+Fuera de produccion, si no defines `CORS_ALLOWED_ORIGINS`, solo se permiten
+`http://localhost:5173` y `http://127.0.0.1:5173`. Una lista explicita sustituye
+estos valores, no los agrega. Debe contener origenes HTTP/HTTPS exactos separados
+por comas, incluyendo el puerto cuando corresponda, sin barra final, rutas,
+credenciales ni comodines. Un cambio de protocolo, host o puerto es otro origen.
+
+En produccion configura las variables antes de iniciar (sustituye los ejemplos
+por los dominios reales del frontend):
+
+```powershell
+$env:NODE_ENV = 'production'
+$env:CORS_ALLOWED_ORIGINS = 'https://ventanilla.example.com,https://admin.example.com'
+npm start
+```
+
+En produccion el backend falla al iniciar si falta la lista; cualquier lista
+vacia o invalida tambien impide el arranque. Los origenes no autorizados,
+incluido `Origin: null`, reciben 403 antes de llegar a las rutas. Se permiten
+preflight para origenes autorizados y se expone `Retry-After` al frontend para
+el limitador de login. No se habilitan cookies entre origenes; se conserva
+la autenticacion con token en `Authorization`.
+
+Las solicitudes sin `Origin` (por ejemplo, clientes de consola o servicios)
+siguen funcionando y requieren los mismos permisos y autenticacion. CORS no
+sustituye estos controles ni impide que un cliente externo falsifique `Origin`.
+Pruebas focalizadas: `node --test test\cors.test.js`.
 
 ## RBAC y autenticacion
 

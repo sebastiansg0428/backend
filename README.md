@@ -19,7 +19,8 @@ para crear `respuestas_radicado`. Si la tabla ya existe con las columnas
 `usuario_id` y `fecha_envio`, no necesitas ejecutar esa migración. El script 003 crea `dependencias` y `usuarios`, agrega
 `radicados.dependencia_destino_id` con FK e indice y enlaza los nombres historicos
 de dependencias. No repitas la migracion en una base que ya tenga esas tablas o
-columna; primero revisa su esquema. Las claves se almacenan con scrypt en el campo
+columna; primero revisa su esquema. Las claves nuevas se almacenan con bcrypt
+(costo 12) en el campo
 `password`, nunca en texto plano.
 
 Para crear el primer administrador, configura variables en la misma terminal:
@@ -27,7 +28,7 @@ Para crear el primer administrador, configura variables en la misma terminal:
 ```powershell
 $env:ADMIN_NOMBRE = Read-Host 'Nombre del administrador'
 $env:ADMIN_EMAIL = Read-Host 'Email del administrador'
-$clave = Read-Host 'Clave (10 a 128 caracteres)' -AsSecureString
+$clave = Read-Host 'Clave (minimo 10 caracteres, mayuscula, minuscula, numero y simbolo; maximo 72 bytes)' -AsSecureString
 $env:ADMIN_PASSWORD = [System.Net.NetworkCredential]::new('', $clave).Password
 try { node scripts\crear-administrador.js } finally {
     Remove-Item Env:ADMIN_PASSWORD
@@ -73,13 +74,25 @@ Ejemplo de creacion:
 
 La dependencia debe existir. Para administrador y ventanilla usa
 `dependencia_id: null`. El servidor recorta nombre y email, normaliza el email a
-minusculas y almacena la clave con scrypt. Las respuestas de gestion nunca
+minusculas y almacena la clave con bcrypt. Las respuestas de gestion nunca
 incluyen la clave ni su hash.
 
 Para editar, envia nombre, email, rol y dependencia_id; omite `password` si
-quieres conservarla. Si la envias, debe tener entre 10 y 128 caracteres. La
+quieres conservarla. Si la envias, debe tener al menos 10 caracteres, una
+mayuscula, una minuscula, un numero y un simbolo (no basta un espacio).
+Se admiten letras Unicode, pero el limite es 72 bytes UTF-8, no 72 caracteres;
+se rechaza el caracter nulo. El primer administrador usa la misma politica. La
 edicion no cambia `activo`: utiliza la ruta de estado para activar o inactivar.
 La creacion siempre produce una cuenta activa.
+
+Los hashes scrypt existentes siguen permitiendo el login con la clave original.
+Tras un login correcto de una cuenta activa con configuracion valida, se
+actualizan a bcrypt sin cambiar la clave; la complejidad solo se exige al crear
+o cambiar contrasenas, no retroactivamente. La actualizacion comprueba que el
+hash no haya cambiado mientras se verificaba la clave; si cambio, responde 409
+sin crear sesion. Las claves antiguas de mas de 72 bytes o con caracter nulo
+conservan scrypt hasta que el administrador las cambie por una clave compatible.
+Nunca se truncan claves. No hace falta migrar el esquema de `usuarios.password`.
 
 No hay borrado fisico ni ruta `DELETE`: la baja logica conserva la identidad del
 autor, los radicados y las respuestas institucionales. Activar o inactivar revoca
@@ -231,8 +244,33 @@ Prueba focalizada: `node --test test\catalogos.test.js` (MySQL simulado).
 Los tokens aleatorios duran 8 horas y se mantienen en memoria (un solo proceso,
 adecuado para ADSO). Reiniciar Node cierra todas las sesiones. No sirven roles
 en cabeceras, parametros o localStorage para obtener permisos: el servidor lee
-rol y dependencia de MySQL en cada solicitud. Login tiene limite de 10 intentos
-por IP durante 15 minutos; un login correcto reinicia el contador.
+rol y dependencia de MySQL en cada solicitud.
+
+Aplica una sola vez [010_limites_login.sql](migrations/010_limites_login.sql)
+antes de desplegar esta version y reinicia todas las instancias del backend.
+Login reserva atomicamente un intento en MySQL por cuenta (10) y por IP (100),
+en ventanas de 15 minutos desde el primer intento de cada contador. Cuenta
+tambien los intentos exitosos; ningun login reinicia los contadores. La cuenta
+se normaliza en minusculas, sin espacios exteriores ni diferencias de acentos,
+incluyendo emails inexistentes, para limitar ataques desde distintas IPs.
+La IP usa `req.ip`, sin aceptar directamente `X-Forwarded-For`; IPv4 y su
+representacion IPv6 mapeada comparten contador. Detras de un proxy, configura
+`trust proxy` solo para proxies de confianza de tu despliegue: no lo habilites
+globalmente. Sin esa configuracion se cuenta la IP del proxy.
+Las claves se guardan como SHA-256 (no son cifrado de datos ni contrasenas).
+Todas las instancias deben usar la misma base MySQL y esta version del login.
+Los bloqueos sobreviven reinicios; se responde 429 con `Retry-After` en segundos.
+Si falla el limitador, se responde 503 sin verificar credenciales ni crear sesion.
+Los intentos bloqueados no prolongan la ventana.
+
+Programa una limpieza periodica de contadores vencidos, en lotes, hasta vaciar
+los vencidos: `DELETE FROM limites_login WHERE expira <= UNIX_TIMESTAMP() LIMIT 1000`.
+Esta tabla no cambia usuarios ni sesiones. Las sesiones siguen en memoria:
+compartir el limitador no hace que los tokens funcionen entre instancias.
+Pruebas MySQL opcionales: configura `$env:TEST_LOGIN_MYSQL = '1'` y ejecuta
+`node --test test\limites-login-mysql.test.js`; crean contadores propios y los
+eliminan al terminar, sin modificar cuentas reales.
+
 Cambiar un usuario revoca sus sesiones. Para produccion: HTTPS, cookies HttpOnly,
 almacen persistente de sesiones y configuracion de origenes CORS/proxy.
 

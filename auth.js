@@ -1,13 +1,16 @@
 const crypto = require('crypto');
 const { promisify } = require('util');
 const express = require('express');
+const bcrypt = require('bcrypt');
 const pool = require('./db');
+const limitesLogin = require('./limites-login');
 
 const scrypt = promisify(crypto.scrypt);
 const ROLES = new Set(['administrador', 'ventanilla', 'funcionario']);
 const sesiones = new Map();
-const intentosLogin = new Map();
 const DURACION_SESION = 8 * 60 * 60 * 1000;
+const COSTO_BCRYPT = 12;
+const POLITICA_PASSWORD = 'Minimo 10 caracteres, una mayuscula, una minuscula, un numero y un simbolo; maximo 72 bytes UTF-8.';
 
 function errorHTTP(res, status, message) {
     return res.status(status).json({ success: false, message });
@@ -21,12 +24,16 @@ function configuracionUsuarioValida(usuario) {
 }
 
 async function hashPassword(password) {
-    const sal = crypto.randomBytes(16).toString('hex');
-    const hash = await scrypt(password, sal, 64);
-    return `scrypt:${sal}:${hash.toString('hex')}`;
+    if (!passwordValido(password)) throw new Error(POLITICA_PASSWORD);
+    return bcrypt.hash(password, COSTO_BCRYPT);
 }
 
 async function verificarPassword(password, guardado) {
+    if (typeof password !== 'string' || typeof guardado !== 'string') return false;
+    if (/^\$2[ab]\$\d{2}\$[./A-Za-z0-9]{53}$/.test(guardado)) {
+        if (Buffer.byteLength(password, 'utf8') > 72 || password.includes('\0')) return false;
+        return bcrypt.compare(password, guardado);
+    }
     if (typeof guardado !== 'string' ||
         !/^scrypt:[a-f0-9]{32}:[a-f0-9]{128}$/.test(guardado)) {
         return false;
@@ -144,28 +151,32 @@ function datosUsuario(body) {
 }
 
 function passwordValido(password) {
-    return typeof password === 'string' && password.length >= 10 && password.length <= 128;
+    return typeof password === 'string' && Array.from(password).length >= 10 &&
+        Buffer.byteLength(password, 'utf8') <= 72 && !password.includes('\0') &&
+        /\p{Lu}/u.test(password) && /\p{Ll}/u.test(password) &&
+        /[0-9]/.test(password) && /[^\p{L}\p{N}\s]/u.test(password);
 }
 
 const router = express.Router();
 
 router.post('/auth/login', async (req, res, next) => {
-    const { email, password } = req.body;
-    if (typeof email !== 'string' || email.length > 254 ||
+    const { email, password } = req.body || {};
+    if (typeof email !== 'string' || !email.trim() || email.length > 254 ||
         typeof password !== 'string' || password.length > 128) {
         return errorHTTP(res, 400, 'Indica email y password validos.');
     }
-    const ahora = Date.now();
-    for (const [ip, intento] of intentosLogin) {
-        if (intento.expira <= ahora) intentosLogin.delete(ip);
-    }
-    const intento = intentosLogin.get(req.ip) || { cantidad: 0, expira: ahora + 15 * 60 * 1000 };
-    if (intento.cantidad >= 10) {
-        return errorHTTP(res, 429, 'Demasiados intentos. Espera 15 minutos antes de reintentar.');
-    }
-    intento.cantidad++;
-    intentosLogin.set(req.ip, intento);
     try {
+        let reserva;
+        try {
+            reserva = await limitesLogin.reservarIntento(email, req.ip);
+        } catch (error) {
+            console.error('No se pudo aplicar el limite compartido de login:', error);
+            return errorHTTP(res, 503, 'Inicio de sesion temporalmente no disponible. Intenta mas tarde.');
+        }
+        if (!reserva.permitido) {
+            res.set('Retry-After', String(reserva.reintentarEn));
+            return errorHTTP(res, 429, 'Demasiados intentos. Espera antes de reintentar.');
+        }
         const [rows] = await pool.execute(
             `SELECT u.*, d.nombre AS dependencia_nombre
              FROM usuarios u LEFT JOIN dependencias d ON d.id = u.dependencia_id
@@ -183,7 +194,17 @@ router.post('/auth/login', async (req, res, next) => {
         if (!configuracionUsuarioValida(usuario)) {
             return errorHTTP(res, 403, 'El usuario tiene una configuracion de rol o dependencia invalida.');
         }
-        intentosLogin.delete(req.ip);
+        if (usuario.password.startsWith('scrypt:') &&
+            Buffer.byteLength(password, 'utf8') <= 72 && !password.includes('\0')) {
+            const nuevoHash = await bcrypt.hash(password, COSTO_BCRYPT);
+            const [actualizacion] = await pool.execute(
+                'UPDATE usuarios SET password = ? WHERE id = ? AND password = ? AND activo = 1',
+                [nuevoHash, usuario.id, usuario.password]
+            );
+            if (!actualizacion.affectedRows) {
+                return errorHTTP(res, 409, 'La cuenta cambio durante el login. Inicia sesion nuevamente.');
+            }
+        }
         const { password: hash, ...publico } = usuario;
         return res.json({ success: true, token: crearSesion(usuario.id), usuario: publico });
     } catch (error) {
@@ -308,7 +329,7 @@ router.get('/usuarios/:id', autenticar, permitirRoles('administrador'), async (r
 router.post('/usuarios', autenticar, permitirRoles('administrador'), async (req, res, next) => {
     const usuario = datosUsuario(req.body);
     if (!usuario || !passwordValido(req.body.password)) {
-        return errorHTTP(res, 400, 'Datos invalidos. Password: 10 a 128 caracteres; funcionario requiere dependencia; los otros roles, NULL.');
+        return errorHTTP(res, 400, `Datos invalidos. ${POLITICA_PASSWORD} Funcionario requiere dependencia; los otros roles, NULL.`);
     }
     try {
         const password = await hashPassword(req.body.password);
@@ -325,7 +346,7 @@ router.put('/usuarios/:id', autenticar, permitirRoles('administrador'), async (r
     const usuario = datosUsuario(req.body);
     if (!Number.isSafeInteger(id) || id < 1 || !usuario ||
         (req.body.password !== undefined && !passwordValido(req.body.password))) {
-        return errorHTTP(res, 400, 'Datos de usuario invalidos.');
+        return errorHTTP(res, 400, `Datos de usuario invalidos. ${POLITICA_PASSWORD}`);
     }
     if (id === req.usuario.id && usuario.rol !== 'administrador') {
         return errorHTTP(res, 409, 'No puedes quitarte tu propio rol de administrador.');
@@ -367,5 +388,6 @@ router.patch('/usuarios/:id/estado', autenticar, permitirRoles('administrador'),
 
 module.exports = {
     router, autenticar, permitirRoles, filtroDependencia, autorizarRadicado,
-    hashPassword, verificarPassword, crearSesion, revocarSesiones, datosUsuario
+    hashPassword, verificarPassword, passwordValido, POLITICA_PASSWORD,
+    crearSesion, revocarSesiones, datosUsuario
 };

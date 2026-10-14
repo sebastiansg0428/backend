@@ -6,6 +6,7 @@ const app = require('../server');
 const { crearSesion, revocarSesiones, hashPassword, verificarPassword } = require('../auth');
 
 test('gestion de usuarios crea, consulta, edita, inactiva y reactiva sin borrar el historial', async t => {
+    t.mock.method(require('../limites-login'), 'reservarIntento', async () => ({ permitido: true, reintentarEn: 0 }));
     const password = 'Password-de-prueba-123';
     const usuarios = new Map([
         [51, { id: 51, nombre: 'Admin', email: 'admin@example.test', rol: 'administrador', dependencia_id: null, activo: 1 }],
@@ -200,7 +201,9 @@ test('gestion de usuarios crea, consulta, edita, inactiva y reactiva sin borrar 
     for (const cambios of [
         { nombre: '' }, { email: 'invalido' }, { rol: 'inventado' },
         { dependencia_id: null }, { dependencia_id: true }, { dependencia_id: [2] },
-        { password: 'corta' }
+        { password: 'corta' }, { password: 'abcdefghijk' },
+        { password: 'PASSWORD-123' }, { password: 'Password-larga' },
+        { password: 'Password1234' }, { password: `Aa1!${'x'.repeat(69)}` }
     ]) {
         assert.equal((await pedir('/usuarios', 51, 'POST', { ...datos, ...cambios })).status, 400);
         assert.equal((await pedir('/usuarios/53', 51, 'PUT', { ...datos, ...cambios })).status, 400);

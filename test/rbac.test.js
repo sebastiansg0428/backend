@@ -21,8 +21,9 @@ test('valida usuarios y nunca convierte una dependencia faltante en acceso globa
     });
 });
 
-test('password se almacena con scrypt y no admite claves en texto plano', async () => {
+test('password se almacena con bcrypt y no admite claves en texto plano', async () => {
     const hash = await hashPassword('Password-de-prueba-123');
+    assert.match(hash, /^\$2b\$12\$/);
     assert.notEqual(hash, 'Password-de-prueba-123');
     assert.equal(await verificarPassword('Password-de-prueba-123', hash), true);
     assert.equal(await verificarPassword('Password-distinta-123', hash), false);
@@ -30,6 +31,7 @@ test('password se almacena con scrypt y no admite claves en texto plano', async 
 });
 
 test('login obtiene rol de MySQL, me lo confirma y logout invalida el token', async t => {
+    t.mock.method(require('../limites-login'), 'reservarIntento', async () => ({ permitido: true, reintentarEn: 0 }));
     const usuario = {
         id: 31, nombre: 'Login de prueba', email: 'login@example.test',
         password: await hashPassword('Password-de-prueba-123'),

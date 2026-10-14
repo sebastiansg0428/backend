@@ -1,5 +1,5 @@
 const pool = require('../db');
-const { hashPassword, datosUsuario } = require('../auth');
+const { hashPassword, datosUsuario, passwordValido, POLITICA_PASSWORD } = require('../auth');
 
 async function crearAdministrador() {
     const usuario = datosUsuario({
@@ -9,8 +9,8 @@ async function crearAdministrador() {
         dependencia_id: null
     });
     const password = process.env.ADMIN_PASSWORD;
-    if (!usuario || typeof password !== 'string' || password.length < 10 || password.length > 128) {
-        throw new Error('Configura ADMIN_NOMBRE, ADMIN_EMAIL y ADMIN_PASSWORD (10 a 128 caracteres).');
+    if (!usuario || !passwordValido(password)) {
+        throw new Error(`Configura ADMIN_NOMBRE, ADMIN_EMAIL y ADMIN_PASSWORD. ${POLITICA_PASSWORD}`);
     }
     const [existentes] = await pool.query("SELECT id FROM usuarios WHERE rol = 'administrador' LIMIT 1");
     if (existentes.length) {

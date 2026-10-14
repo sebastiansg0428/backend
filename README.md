@@ -98,6 +98,19 @@ MySQL simulado; no sustituyen la aplicacion de la migracion en la base real.
 
 ## Gestion de catalogos: dependencias y tipos de tramite
 
+La migracion `node migrations\009_consolidar_dependencias.js` establece las 24
+dependencias institucionales aprobadas. Antes de ejecutarla, respalda
+`dependencias`, las asignaciones de `usuarios` y `radicados`, y
+`historial_radicado`; ejecutala sin escrituras concurrentes al catalogo.
+Conserva los IDs existentes y prioriza Oficina de Planeacion al consolidarla
+con Secretaria de Planeacion. Traslada las referencias de usuarios y radicados,
+registra el cambio de ID en el historial y conserva los nombres historicos de
+los radicados. Retira "Todas las dependencias" solo si no tiene referencias:
+esa opcion es un filtro de interfaz, no una dependencia institucional.
+La operacion es transaccional y puede repetirse sin duplicar oficinas.
+Si detecta otras dependencias sin equivalencia o referencias de otras tablas,
+falla sin aplicar cambios. No cambia roles, claves, documentos ni terminos.
+
 Aplica una sola vez [007_dependencias_activas.sql](migrations/007_dependencias_activas.sql)
 antes de ejecutar esta version. Agrega `dependencias.activo` con valor inicial 1,
 sin cambiar IDs ni referencias. Respalda y revisa el esquema antes de aplicarla;
@@ -268,6 +281,16 @@ su existencia; una accion de rol no permitido devuelve 403; sin sesion, 401.
 
 La radicación acepta de 1 a 5 partes `archivos` (también conserva el campo
 singular `archivo` para la interfaz anterior), con un máximo de 10 MB por PDF.
+Tanto la radicacion como las respuestas institucionales validan el contenido
+con `pdf-lib`: cabecera y cierre PDF, objetos internos y arbol de paginas.
+La extension y el MIME siguen siendo filtros preliminares, no la validacion
+definitiva. Los archivos corruptos, truncados o cifrados que la biblioteca no
+puede leer se rechazan con 400; se eliminan todos los adjuntos de esa solicitud
+sin guardar registros. Los errores de lectura del disco devuelven 500 y tambien
+activan la limpieza. No se reescriben los bytes del documento ni se modifican
+las carpetas, nombres UUID o limites existentes. Esta validacion estructural
+no sustituye un analisis antimalware ni elimina contenido activo de un PDF.
+
 Los radicados nuevos usan el formato `RAD-AAAAMMDD-####`, por ejemplo
 `RAD-20261013-0001`. El contador vuelve a `0001` en cada año y se incrementa
 dentro de la transacción MySQL para evitar números duplicados en solicitudes

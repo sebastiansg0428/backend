@@ -4,6 +4,7 @@ const { once } = require('node:events');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const { randomUUID } = require('node:crypto');
+const { PDFDocument } = require('pdf-lib');
 const pool = require('../db');
 const app = require('../server');
 const { crearSesion, revocarSesiones } = require('../auth');
@@ -208,9 +209,12 @@ test('administrador gestiona catalogos con baja logica y conserva permisos, refe
     assert.deepEqual((await selectActivas.json()).dependencias.map(d => d.id), [4]);
 
     const nombreArchivo = `catalogo-${randomUUID()}.pdf`;
+    const documento = await PDFDocument.create();
+    documento.addPage();
+    const contenidoPdf = await documento.save();
     const archivoRadicado = async campos => {
         const form = new FormData();
-        form.append('archivos', new Blob(['%PDF-1.4\n%%EOF'], { type: 'application/pdf' }), nombreArchivo);
+        form.append('archivos', new Blob([contenidoPdf], { type: 'application/pdf' }), nombreArchivo);
         for (const [campo, valor] of Object.entries({
             asunto_documento: 'Prueba', remitente_nombre: 'Remitente', remitente_documento: '123', ...campos
         })) form.append(campo, String(valor));

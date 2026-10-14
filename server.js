@@ -4,6 +4,7 @@ const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
+const { PDFDocument } = require('pdf-lib');
 const pool = require('./db');
 const calcularSemaforoBackend = require('./semaforo');
 const { agregarDias, obtenerFechaLocal } = require('./semaforo');
@@ -108,13 +109,21 @@ const uploadRespuesta = multer({ storage: storageRespuesta, ...opcionesCargaPdf 
 
 async function esArchivoPdfValido(archivo) {
     if (!archivo || archivo.size < 5) return false;
-    const manejador = await fs.promises.open(archivo.path, 'r');
+    const contenido = await fs.promises.readFile(archivo.path);
+    if (!/^%PDF-\d\.\d[\r\n]/.test(contenido.subarray(0, 9).toString('ascii')) ||
+        !/%%EOF[\x00\t\n\f\r ]*$/.test(contenido.subarray(-1024).toString('latin1'))) {
+        return false;
+    }
     try {
-        const cabecera = Buffer.alloc(Math.min(archivo.size, 1024));
-        const { bytesRead } = await manejador.read(cabecera, 0, cabecera.length, 0);
-        return cabecera.subarray(0, bytesRead).includes(Buffer.from('%PDF-', 'ascii'));
-    } finally {
-        await manejador.close();
+        const documento = await PDFDocument.load(contenido, {
+            throwOnInvalidObject: true,
+            updateMetadata: false
+        });
+        documento.getPages();
+        return true;
+    } catch (error) {
+        console.warn('PDF rechazado durante la validacion de estructura:', error.message);
+        return false;
     }
 }
 
@@ -994,14 +1003,14 @@ app.post(
             (req.files || []).forEach(eliminarArchivoSubido);
             return responderError(res, 400, 'La respuesta debe tener entre 10 y 10.000 caracteres.');
         }
-        for (const archivo of req.files || []) {
-            if (!await esArchivoPdfValido(archivo)) {
-                (req.files || []).forEach(eliminarArchivoSubido);
-                return responderError(res, 400, 'Uno o más archivos no contienen un PDF válido.');
-            }
-        }
         let connection;
         try {
+            for (const archivo of req.files || []) {
+                if (!await esArchivoPdfValido(archivo)) {
+                    (req.files || []).forEach(eliminarArchivoSubido);
+                    return responderError(res, 400, 'Uno o más archivos no contienen un PDF válido.');
+                }
+            }
             connection = await pool.getConnection();
             // Guardamos respuesta, PDFs, cambio de estado y fecha en una sola
             // transacción: si una parte falla, no queda una respuesta incompleta.

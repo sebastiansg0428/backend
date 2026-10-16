@@ -80,13 +80,13 @@ test('valida la estructura PDF en radicacion y respuestas sin alterar el almacen
     t.after(() => new Promise((resolve, reject) =>
         server.close(error => error ? reject(error) : resolve())));
     const url = `http://127.0.0.1:${server.address().port}`;
-    const subir = (ruta, contenidos, campo = 'archivos', tipoComunicacion = 'Externa') => {
+    const subir = (ruta, contenidos, campo = 'archivos', tipoComunicacion = 'Externa', destino = '2') => {
         const form = new FormData();
         form.append('contenido', 'Respuesta institucional de prueba');
         form.append('asunto_documento', 'Prueba PDF');
         form.append('remitente_nombre', 'Remitente');
         form.append('remitente_documento', '123');
-        form.append('dependencia_destino_id', '2');
+        form.append('dependencia_destino_id', destino);
         form.append('tipo_tramite_id', '1');
         if (tipoComunicacion !== null) form.append('tipo_comunicacion', tipoComunicacion);
         for (const contenido of contenidos) {
@@ -187,6 +187,18 @@ test('valida la estructura PDF en radicacion y respuestas sin alterar el almacen
             assert.equal(insertRadicado.valores[2], tipoComunicacion);
         });
     }
+    await t.test('radicacion global se guarda sin ID de dependencia y con marca compartida', async () => {
+        const escriturasAntes = escrituras.length;
+        const respuesta = await subir('/api/radicados', [pdfClasico], 'archivos', 'Externa', 'todas');
+        assert.equal(respuesta.status, 200);
+        const resultado = await respuesta.json();
+        assert.equal(resultado.destino_todas_dependencias, true);
+        assert.equal(resultado.dependencia_destino, 'Todas las dependencias');
+        const insertRadicado = escrituras.slice(escriturasAntes).find(({ sql }) => sql.includes('INSERT INTO radicados'));
+        assert.equal(insertRadicado.valores[13], 'Todas las dependencias');
+        assert.equal(insertRadicado.valores[16], null);
+        assert.equal(insertRadicado.valores[17], 1);
+    });
     await t.test('el campo singular archivo mantiene compatibilidad con radicacion', async () => {
         const respuesta = await subir('/api/radicados', [pdfClasico], 'archivo');
         assert.equal(respuesta.status, 200);

@@ -17,7 +17,11 @@ test('valida usuarios y nunca convierte una dependencia faltante en acceso globa
     assert.equal(datosUsuario({ ...base, rol: 'inventado', dependencia_id: null }), null);
     assert.throws(() => filtroDependencia({ rol: 'funcionario', dependencia_id: null }));
     assert.deepEqual(filtroDependencia({ rol: 'funcionario', dependencia_id: 2 }), {
-        sql: 'r.dependencia_destino_id = ?', valores: [2]
+        sql: '(r.dependencia_destino_id = ? OR EXISTS (\n' +
+            '                SELECT 1 FROM radicado_dependencias rdx\n' +
+            '                WHERE rdx.numero_radicado = r.numero_radicado\n' +
+            '                  AND rdx.dependencia_id = ?\n' +
+            '            ))', valores: [2, 2]
     });
 });
 
@@ -75,14 +79,17 @@ test('RBAC HTTP aplica permisos en listas, alertas, archivos, historial y escrit
         [11, { id: 11, nombre: 'Admin', rol: 'administrador', dependencia_id: null, activo: 1 }],
         [12, { id: 12, nombre: 'Ventanilla', rol: 'ventanilla', dependencia_id: null, activo: 1 }],
         [13, { id: 13, nombre: 'Funcionario', rol: 'funcionario', dependencia_id: 2, dependencia_nombre: 'Planeacion', activo: 1 }],
-        [14, { id: 14, nombre: 'Sin oficina', rol: 'funcionario', dependencia_id: null, activo: 1 }]
+        [14, { id: 14, nombre: 'Sin oficina', rol: 'funcionario', dependencia_id: null, activo: 1 }],
+        [15, { id: 15, nombre: 'Funcionaria Hacienda', rol: 'funcionario', dependencia_id: 3, dependencia_nombre: 'Hacienda', activo: 1 }]
     ]);
     const tokens = new Map([...usuarios.keys()].map(id => [id, crearSesion(id)]));
     t.after(() => { for (const id of usuarios.keys()) revocarSesiones(id); });
     const registros = [
         { id: 1, numero_radicado: 'RAD-P', dependencia_destino_id: 2, dependencia_destino: 'Nombre historico' },
         { id: 2, numero_radicado: 'RAD-H', dependencia_destino_id: 3, dependencia_destino: 'Hacienda' },
-        { id: 3, numero_radicado: 'RAD-S', dependencia_destino_id: null, dependencia_destino: 'Planeacion' }
+        { id: 3, numero_radicado: 'RAD-S', dependencia_destino_id: null, dependencia_destino: 'Planeacion' },
+        { id: 4, numero_radicado: 'RAD-G', dependencia_destino_id: null,
+            dependencia_destino: 'Todas las dependencias', destino_todas_dependencias: 1 }
     ].map(r => ({
         ...r, estado: 'Recibido', termino_fecha_recepcion: '2000-01-01',
         termino_dias: 1, termino_tipo_dias: 'calendario',
@@ -96,21 +103,43 @@ test('RBAC HTTP aplica permisos en listas, alertas, archivos, historial y escrit
         await fs.writeFile(archivo, contenidoPDF);
         t.after(() => fs.unlink(archivo));
     }
+    const asignacionesGlobales = [
+        { id: 401, numero_radicado: 'RAD-G', dependencia_id: 2, estado: 'Respondido' },
+        { id: 402, numero_radicado: 'RAD-G', dependencia_id: 3, estado: 'Recibido' }
+    ];
     const consultas = [];
     let conexiones = 0;
     t.mock.method(pool, 'query', async (sql, values = []) => {
         consultas.push({ sql, values });
         assert.match(sql, /FROM radicados AS r/);
-        const restringida = sql.includes('WHERE r.dependencia_destino_id = ?');
-        let resultados = restringida
-            ? registros.filter(r => r.dependencia_destino_id === values[0]) : registros;
-        if (sql.includes('AND (? IS NULL OR r.dependencia_destino_id = ?)')) {
-            const [id, idRepetido, nombre, nombreRepetido] = values.slice(restringida ? 1 : 0);
+        const restringida = sql.includes('WHERE (r.dependencia_destino_id = ? OR EXISTS');
+        const globalSeleccionada = values[0];
+        const globals = asignacionesGlobales.filter(a => globalSeleccionada === null || a.dependencia_id === globalSeleccionada);
+        let resultados = registros.flatMap(r => r.destino_todas_dependencias
+            ? globals.filter(a => a.numero_radicado === r.numero_radicado).map(a => ({
+                ...r, radicado_dependencia_id: a.id, seguimiento_dependencia_id: a.dependencia_id,
+                seguimiento_dependencia_nombre: a.dependencia_id === 2 ? 'Planeacion' : 'Hacienda',
+                seguimiento_estado: a.estado,
+                seguimiento_fecha_respuesta: a.estado === 'Respondido' ? '2026-10-16 10:00:00' : null
+            }))
+            : [{ ...r, radicado_dependencia_id: null }]);
+        const filtroOffset = 2;
+        const dependenciaUsuario = restringida ? values[filtroOffset] : null;
+        if (restringida) resultados = resultados.filter(r =>
+            r.dependencia_destino_id === dependenciaUsuario ||
+            (r.destino_todas_dependencias && r.seguimiento_dependencia_id === dependenciaUsuario));
+        if (sql.includes('AND (? IS NULL OR (r.destino_todas_dependencias = 1 AND rd.dependencia_id = ?)')) {
+            const offset = filtroOffset + (restringida ? 2 : 0);
+            const [id, idRepetido, idDestino, nombre, nombreRepetido, nombreDestino] = values.slice(offset);
             assert.equal(id, idRepetido);
+            assert.equal(id, idDestino);
             assert.equal(nombre, nombreRepetido);
+            assert.equal(nombre, nombreDestino);
             resultados = resultados.filter(r =>
-                (id === null || r.dependencia_destino_id === id) &&
-                (nombre === null || r.dependencia_destino === nombre));
+                (id === null || (r.destino_todas_dependencias
+                    ? r.seguimiento_dependencia_id === id : r.dependencia_destino_id === id)) &&
+                (nombre === null || (r.destino_todas_dependencias
+                    ? r.seguimiento_dependencia_nombre === nombre : r.dependencia_destino === nombre)));
         }
         return [resultados];
     });
@@ -122,7 +151,8 @@ test('RBAC HTTP aplica permisos en listas, alertas, archivos, historial y escrit
             const dependenciaId = values[esArchivo ? 3 : 1];
             const encontrados = registros.filter(r =>
                 (esArchivo ? r.ruta_archivo === values[0] : r.numero_radicado === values[0]) &&
-                (!sql.includes('r.dependencia_destino_id = ?') || r.dependencia_destino_id === dependenciaId));
+                (!sql.includes('r.dependencia_destino_id = ?') ||
+                    r.dependencia_destino_id === dependenciaId || r.destino_todas_dependencias === 1));
             return [encontrados];
         }
         if (sql.includes('FROM historial_radicado')) return [[{ campo_modificado: 'estado' }]];
@@ -137,7 +167,7 @@ test('RBAC HTTP aplica permisos en listas, alertas, archivos, historial y escrit
             release() {},
             async execute(sql, values) {
                 assert.match(sql, /radicados\.dependencia_destino_id = \?/);
-                assert.deepEqual(values, ['RAD-H', 2]);
+                assert.deepEqual(values, ['RAD-H', 2, 2]);
                 return [[]];
             }
         };
@@ -163,7 +193,7 @@ test('RBAC HTTP aplica permisos en listas, alertas, archivos, historial y escrit
     for (const id of [11, 12]) {
         const respuesta = await pedir('/api/radicados', id);
         assert.equal(respuesta.status, 200);
-        assert.equal((await respuesta.json()).total, 3);
+        assert.equal((await respuesta.json()).total, 5);
         assert.match(consultas.at(-1).sql, /WHERE 1 = 1/);
     }
     for (const parametros of [
@@ -172,9 +202,15 @@ test('RBAC HTTP aplica permisos en listas, alertas, archivos, historial y escrit
     ]) {
         const propias = await pedir(`/api/radicados${parametros}`, 13);
         assert.equal(propias.status, 200);
-        assert.deepEqual((await propias.json()).radicados.map(r => r.numero_radicado), ['RAD-P']);
-        assert.deepEqual(consultas.at(-1).values, [2]);
+        assert.deepEqual((await propias.json()).radicados.map(r => r.numero_radicado), ['RAD-P', 'RAD-G']);
+        assert.deepEqual(consultas.at(-1).values, [2, 2, 2, 2]);
     }
+    const hacienda = await pedir('/api/radicados', 15);
+    assert.equal(hacienda.status, 200);
+    const radicadoGlobalHacienda = (await hacienda.json()).radicados.find(r => r.numero_radicado === 'RAD-G');
+    assert.equal(radicadoGlobalHacienda.estado, 'Recibido');
+    const planeacion = await pedir('/api/radicados', 13);
+    assert.equal((await planeacion.json()).radicados.find(r => r.numero_radicado === 'RAD-G').estado, 'Respondido');
     assert.equal((await pedir('/api/radicados', 14)).status, 403);
     const consultasAntes = consultas.length;
     assert.equal((await pedir('/api/alertas?dependencia_id=3', 13)).status, 403);
@@ -185,13 +221,13 @@ test('RBAC HTTP aplica permisos en listas, alertas, archivos, historial y escrit
         const propias = await pedir(`/api/alertas${parametros}`, 13);
         assert.equal(propias.status, 200);
         assert.deepEqual((await propias.json()).alertas.map(r => r.numero_radicado), ['RAD-P']);
-        assert.deepEqual(consultas.at(-1).values, [2, null, null, null, null]);
+        assert.equal(consultas.at(-1).values.length, 10);
     }
     for (const id of [11, 12]) {
         for (const [parametros, esperados] of [
-            ['', ['RAD-P', 'RAD-H', 'RAD-S']],
-            ['?dependencia_id=3', ['RAD-H']],
-            ['?dependencia=Hacienda', ['RAD-H']]
+            ['', ['RAD-P', 'RAD-H', 'RAD-S', 'RAD-G']],
+            ['?dependencia_id=3', ['RAD-H', 'RAD-G']],
+            ['?dependencia=Hacienda', ['RAD-H', 'RAD-G']]
         ]) {
             const respuesta = await pedir(`/api/alertas${parametros}`, id);
             assert.equal(respuesta.status, 200);
@@ -212,7 +248,7 @@ test('RBAC HTTP aplica permisos en listas, alertas, archivos, historial y escrit
             const ruta = `/uploads/${r.ruta_archivo}`;
             assert.equal((await pedir(ruta, undefined, { method })).status, 401);
             const propia = await pedir(ruta, 13, { method });
-            assert.equal(propia.status, r.dependencia_destino_id === 2 ? 200 : 404);
+            assert.equal(propia.status, r.dependencia_destino_id === 2 || r.destino_todas_dependencias === 1 ? 200 : 404);
             if (method === 'GET') {
                 if (propia.status === 200) {
                     assert.equal(await propia.text(), contenidoPDF);

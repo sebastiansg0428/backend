@@ -1,5 +1,24 @@
 # Backend de Ventanilla Unica
 
+## Destino para todas las dependencias
+
+Antes de iniciar esta versión, aplica una sola vez
+[017_destino_todas_dependencias.sql](migrations/017_destino_todas_dependencias.sql)
+en la base `ventanilla_unica`. La columna nueva queda en `0` para todos los
+radicados existentes; no los convierte en globales. Al radicar y elegir
+“Todas las dependencias”, el servidor guarda `dependencia_destino_id` como
+`NULL`, el nombre legible en `dependencia_destino` y la marca como `1`.
+
+Los radicados globales son visibles para funcionarios de cualquier dependencia.
+Cada dependencia mantiene su propio estado y respuesta. El radicado original,
+sus documentos y el término legal son compartidos. Aplica también, una sola vez,
+[018_seguimiento_por_dependencia.sql](migrations/018_seguimiento_por_dependencia.sql)
+después de la 017; esta migración asigna los radicados globales existentes a las
+dependencias activas y atribuye respuestas históricas a la dependencia del autor
+cuando puede determinarla. La migración no se ejecuta automáticamente; reinicia
+el backend después de aplicarla. Las dependencias nuevas o reactivadas reciben
+asignaciones para los radicados globales existentes.
+
 ## Términos legales generales
 
 La migración [016_terminos_generales_peticion.sql](migrations/016_terminos_generales_peticion.sql)
@@ -61,6 +80,40 @@ npm test
 
 Reinicia el proceso Node.js despues de modificar el backend; `npm start` no
 recarga los archivos automaticamente.
+
+## Validacion de integracion MySQL local
+
+Haz la validacion en una base separada, por ejemplo `ventanilla_unica_test`, y
+usa exclusivamente datos ficticios. El repositorio no incluye el DDL inicial de
+`radicados`; las migraciones parten de una tabla ya existente. Por eso, para
+probar la version actual sin datos reales, prepara la base de prueba importando
+solo la estructura de una base compatible (sin filas) y no presentes ese
+procedimiento como una instalacion limpia reproducible desde cero.
+
+Con la base aislada ya preparada, selecciona esa base antes de iniciar o probar
+el backend:
+
+```powershell
+$env:DB_NAME = 'ventanilla_unica_test'
+$env:PORT = '3001'
+npm start
+```
+
+En otra terminal, configura el mismo `DB_NAME` y ejecuta `npm test`. La prueba
+MySQL de límites de inicio de sesión es optativa; ejecútala solo contra la base
+aislada:
+
+```powershell
+$env:DB_NAME = 'ventanilla_unica_test'
+$env:TEST_LOGIN_MYSQL = '1'
+node --test test\limites-login-mysql.test.js
+Remove-Item Env:TEST_LOGIN_MYSQL
+```
+
+Las pruebas HTTP que adjuntan PDFs escriben los archivos en `uploads\` del
+backend, aunque la base sea de prueba. Usa nombres/datos ficticios y elimina
+solo los archivos creados por esa prueba. No ejecutes migraciones sobre la base
+de uso actual para validar una instalación limpia.
 
 ## Origenes permitidos (CORS)
 
@@ -199,8 +252,9 @@ dependencias institucionales aprobadas. Antes de ejecutarla, respalda
 Conserva los IDs existentes y prioriza Oficina de Planeacion al consolidarla
 con Secretaria de Planeacion. Traslada las referencias de usuarios y radicados,
 registra el cambio de ID en el historial y conserva los nombres historicos de
-los radicados. Retira "Todas las dependencias" solo si no tiene referencias:
-esa opcion es un filtro de interfaz, no una dependencia institucional.
+los radicados. Si encuentra una dependencia antigua llamada "Todas las
+dependencias", la retira solo si no tiene referencias. La opcion actual de
+destino global es una marca del radicado y no una dependencia del catalogo.
 La operacion es transaccional y puede repetirse sin duplicar oficinas.
 Si detecta otras dependencias sin equivalencia o referencias de otras tablas,
 falla sin aplicar cambios. No cambia roles, claves, documentos ni terminos.

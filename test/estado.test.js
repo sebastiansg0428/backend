@@ -48,12 +48,13 @@ test('PUT estado admite los cuatro estados y actualiza el semáforo sin cambiar 
         async rollback() { rollbacks++; },
         release() {},
         async execute(sql, values) {
-            if (sql.includes('SELECT estado FROM radicados')) {
+            if (sql.includes('SELECT estado, destino_todas_dependencias FROM radicados')) {
                 if (values.length > 1) {
                     assert.match(sql, /radicados\.dependencia_destino_id = \?/);
-                    assert.deepEqual(values, ['RAD-PRUEBA', 2]);
+                    assert.match(sql, /EXISTS \(/);
+                    assert.deepEqual(values, ['RAD-PRUEBA', 2, 2]);
                 }
-                return [[{ estado }]];
+                return [[{ estado, destino_todas_dependencias: 0 }]];
             }
             if (sql.includes('UPDATE radicados')) {
                 estado = values[0];
@@ -130,4 +131,60 @@ test('PUT estado admite los cuatro estados y actualiza el semáforo sin cambiar 
     assert.equal((await propia.json()).semaforo.nivel, 'completado');
     assert.equal(commits, 5);
     assert.equal(historial[4][3], String(funcionario.id));
+});
+
+test('PUT de un radicado global solo actualiza la asignación de la dependencia del funcionario', async t => {
+    const funcionario = {
+        id: 72, nombre: 'Funcionaria', rol: 'funcionario', dependencia_id: 7,
+        dependencia_nombre: 'Talento Humano', activo: 1
+    };
+    const token = crearSesion(funcionario.id);
+    t.after(() => revocarSesiones(funcionario.id));
+    t.mock.method(pool, 'execute', async (sql, values) => {
+        if (sql.includes('FROM usuarios u')) return [[funcionario]];
+        throw new Error(`Consulta inesperada en la prueba: ${sql}`);
+    });
+    let estadoDependencia = 'Recibido';
+    const escrituras = [];
+    const connection = {
+        async beginTransaction() {}, async commit() {}, async rollback() {}, release() {},
+        async execute(sql, values) {
+            if (sql.includes('SELECT estado, destino_todas_dependencias FROM radicados')) {
+                assert.deepEqual(values, ['RAD-GLOBAL', 7, 7]);
+                return [[{ estado: 'Respondido', destino_todas_dependencias: 1 }]];
+            }
+            if (sql.includes('SELECT id, estado FROM radicado_dependencias'))
+                return [[{ id: 501, estado: estadoDependencia }]];
+            if (sql.includes('UPDATE radicado_dependencias')) {
+                estadoDependencia = values[0];
+                escrituras.push(sql);
+                return [{ affectedRows: 1 }];
+            }
+            if (sql.includes('INSERT INTO historial_radicado')) return [{ affectedRows: 1 }];
+            if (sql.includes('SELECT r.*')) return [[{
+                numero_radicado: 'RAD-GLOBAL', estado: 'Respondido',
+                destino_todas_dependencias: 1,
+                radicado_dependencia_id: 501,
+                seguimiento_estado: estadoDependencia,
+                termino_fecha_recepcion: '2026-10-16',
+                termino_dias: 15, termino_tipo_dias: 'habiles',
+                termino_fecha_limite_actual: '2026-11-06'
+            }]];
+            throw new Error(`Consulta inesperada en la prueba: ${sql}`);
+        }
+    };
+    t.mock.method(pool, 'getConnection', async () => connection);
+    const server = app.listen(0, '127.0.0.1');
+    await once(server, 'listening');
+    t.after(() => new Promise((resolve, reject) =>
+        server.close(error => error ? reject(error) : resolve())));
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/api/radicados/RAD-GLOBAL/estado`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ estado: 'En trámite' })
+    });
+    assert.equal(response.status, 200);
+    const resultado = await response.json();
+    assert.equal(resultado.estado, 'En trámite');
+    assert.equal(estadoDependencia, 'En trámite');
+    assert.equal(escrituras.length, 1);
 });

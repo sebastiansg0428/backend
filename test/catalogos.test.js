@@ -57,6 +57,9 @@ test('administrador gestiona catalogos con baja logica y conserva permisos, refe
             dependencias.push({ id, nombre: valores[0], activo: 1 });
             return [{ insertId: id }];
         }
+        if (sql.startsWith('INSERT IGNORE INTO radicado_dependencias')) {
+            return [{ affectedRows: 0 }];
+        }
         if (sql.startsWith('UPDATE dependencias')) {
             const [valor, id] = valores;
             const dependencia = dependencias.find(d => d.id === id);
@@ -128,7 +131,7 @@ test('administrador gestiona catalogos con baja logica y conserva permisos, refe
         }
         if (sql.includes('FROM radicados AS r')) {
             assert.match(sql, /r.dependencia_destino_id = \?/);
-            assert.deepEqual(valores, [2]);
+            assert.deepEqual(valores, [2, 2, 2, 2]);
             return [[radicado]];
         }
         assert.fail(`SQL inesperado: ${sql}`);
@@ -216,7 +219,8 @@ test('administrador gestiona catalogos con baja logica y conserva permisos, refe
         const form = new FormData();
         form.append('archivos', new Blob([contenidoPdf], { type: 'application/pdf' }), nombreArchivo);
         for (const [campo, valor] of Object.entries({
-            asunto_documento: 'Prueba', remitente_nombre: 'Remitente', remitente_documento: '123', ...campos
+            asunto_documento: 'Prueba', remitente_nombre: 'Remitente', remitente_documento: '123',
+            tipo_comunicacion: 'Externa', ...campos
         })) form.append(campo, String(valor));
         return fetch(url + '/radicados', {
             method: 'POST', headers: { Authorization: `Bearer ${tokens[1]}` }, body: form

@@ -111,7 +111,14 @@ function filtroDependencia(usuario, alias = 'r') {
         throw new Error('No se puede consultar sin un usuario y una dependencia validos.');
     }
     return usuario.rol === 'funcionario'
-        ? { sql: `${alias}.dependencia_destino_id = ?`, valores: [usuario.dependencia_id] }
+        ? {
+            sql: `(${alias}.dependencia_destino_id = ? OR EXISTS (
+                SELECT 1 FROM radicado_dependencias rdx
+                WHERE rdx.numero_radicado = ${alias}.numero_radicado
+                  AND rdx.dependencia_id = ?
+            ))`,
+            valores: [usuario.dependencia_id, usuario.dependencia_id]
+        }
         : { sql: '1 = 1', valores: [] };
 }
 
@@ -249,6 +256,11 @@ router.post('/dependencias', autenticar, permitirRoles('administrador'), async (
     }
     try {
         const [result] = await pool.execute('INSERT INTO dependencias (nombre) VALUES (?)', [nombre]);
+        await pool.execute(
+            `INSERT IGNORE INTO radicado_dependencias (numero_radicado, dependencia_id)
+             SELECT numero_radicado, ? FROM radicados WHERE destino_todas_dependencias = 1`,
+            [result.insertId]
+        );
         res.status(201).json({ success: true, dependencia: { id: result.insertId, nombre, activo: 1 } });
     } catch (error) { next(error); }
 });
@@ -288,6 +300,13 @@ router.patch('/dependencias/:id/estado', autenticar, permitirRoles('administrado
     try {
         const [result] = await pool.execute('UPDATE dependencias SET activo = ? WHERE id = ?', [activo, id]);
         if (!result.affectedRows) return errorHTTP(res, 404, 'Dependencia no encontrada.');
+        if (activo === 1) {
+            await pool.execute(
+                `INSERT IGNORE INTO radicado_dependencias (numero_radicado, dependencia_id)
+                 SELECT numero_radicado, ? FROM radicados WHERE destino_todas_dependencias = 1`,
+                [id]
+            );
+        }
         res.json({
             success: true, dependencia: { id, activo },
             message: activo === 1 ? 'Dependencia activada.' : 'Dependencia inactivada.'

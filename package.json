@@ -4,7 +4,7 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "test": "node --test"
+    "test": "node --experimental-test-isolation=none --test"
   },
   "keywords": [],
   "author": "",

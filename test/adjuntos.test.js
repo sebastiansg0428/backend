@@ -80,7 +80,7 @@ test('valida la estructura PDF en radicacion y respuestas sin alterar el almacen
     t.after(() => new Promise((resolve, reject) =>
         server.close(error => error ? reject(error) : resolve())));
     const url = `http://127.0.0.1:${server.address().port}`;
-    const subir = (ruta, contenidos, campo = 'archivos') => {
+    const subir = (ruta, contenidos, campo = 'archivos', tipoComunicacion = 'Externa') => {
         const form = new FormData();
         form.append('contenido', 'Respuesta institucional de prueba');
         form.append('asunto_documento', 'Prueba PDF');
@@ -88,7 +88,7 @@ test('valida la estructura PDF en radicacion y respuestas sin alterar el almacen
         form.append('remitente_documento', '123');
         form.append('dependencia_destino_id', '2');
         form.append('tipo_tramite_id', '1');
-        form.append('tipo_comunicacion', 'Entrada');
+        if (tipoComunicacion !== null) form.append('tipo_comunicacion', tipoComunicacion);
         for (const contenido of contenidos) {
             form.append(campo, new Blob([contenido], { type: 'application/pdf' }), 'adjunto.pdf');
         }
@@ -97,6 +97,13 @@ test('valida la estructura PDF en radicacion y respuestas sin alterar el almacen
         });
     };
     const rutas = ['/api/radicados', '/api/radicados/RAD-PRUEBA/respuesta'];
+    for (const tipoComunicacion of [null, 'Entrada']) {
+        const conexionesAntes = conexiones;
+        const respuesta = await subir('/api/radicados', [pdfClasico], 'archivos', tipoComunicacion);
+        assert.equal(respuesta.status, 400);
+        assert.equal((await respuesta.json()).message, 'La clase de comunicación debe ser Interna o Externa.');
+        assert.equal(conexiones, conexionesAntes);
+    }
     const invalidos = [
         ['texto con firma falsificada', Buffer.from('%PDF-1.4\nNo es un PDF\n%%EOF')],
         ['HTML con firma incrustada', Buffer.from('<html>%PDF-1.4\n%%EOF</html>')],
@@ -144,7 +151,13 @@ test('valida la estructura PDF en radicacion y respuestas sin alterar el almacen
             const commitsAntes = commits;
             const respuesta = await subir(ruta, [pdfClasico, pdfComprimido]);
             assert.equal(respuesta.status, ruta === '/api/radicados' ? 200 : 201);
-            assert.equal((await respuesta.json()).success, true);
+            const resultado = await respuesta.json();
+            assert.equal(resultado.success, true);
+            if (ruta === '/api/radicados') {
+                assert.equal(resultado.tipo_comunicacion, 'Externa');
+                assert.ok(escrituras.slice(escriturasAntes).some(({ sql }) =>
+                    sql.includes('INSERT INTO comunicaciones_externas')));
+            }
             assert.equal(commits, commitsAntes + 1);
             const documentos = escrituras.slice(escriturasAntes).filter(({ sql }) =>
                 /INSERT INTO documentos_(radicado|respuesta)/.test(sql));
@@ -159,6 +172,19 @@ test('valida la estructura PDF en radicacion y respuestas sin alterar el almacen
                 assert.equal(valores[4], original.length);
                 assert.deepEqual(await leerArchivo(path.join(uploadDir, valores[2])), original);
             }
+        });
+    }
+    for (const tipoComunicacion of ['Interna', 'Externa']) {
+        await t.test(`radicacion guarda la clase elegida: ${tipoComunicacion}`, async () => {
+            const escriturasAntes = escrituras.length;
+            const respuesta = await subir('/api/radicados', [pdfClasico], 'archivos', tipoComunicacion);
+            assert.equal(respuesta.status, 200);
+            const resultado = await respuesta.json();
+            assert.equal(resultado.tipo_comunicacion, tipoComunicacion);
+            const tabla = tipoComunicacion === 'Interna' ? 'comunicaciones_internas' : 'comunicaciones_externas';
+            assert.ok(escrituras.slice(escriturasAntes).some(({ sql }) => sql.includes(`INSERT INTO ${tabla}`)));
+            const insertRadicado = escrituras.slice(escriturasAntes).find(({ sql }) => sql.includes('INSERT INTO radicados'));
+            assert.equal(insertRadicado.valores[2], tipoComunicacion);
         });
     }
     await t.test('el campo singular archivo mantiene compatibilidad con radicacion', async () => {

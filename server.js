@@ -10,6 +10,7 @@ const calcularSemaforoBackend = require('./semaforo');
 const { agregarDias, obtenerFechaLocal } = require('./semaforo');
 const { normalizarTexto, obtenerTiempoRespuesta } = require('./plazos');
 const { obtenerEstadoEditable } = require('./estados');
+const { clasificarTipoTramite } = require('./comunicaciones');
 const {
     router: authRouter, autenticar, permitirRoles, filtroDependencia, autorizarRadicado
 } = require('./auth');
@@ -215,7 +216,7 @@ const protegerAdministracion = permitirRoles('administrador');
 async function obtenerTerminoVigente({ tipoTramiteId, tipoDocumento, fecha }) {
     const esIdNumerico = tipoTramiteId && Number.isInteger(Number(tipoTramiteId)) && Number(tipoTramiteId) >= 1;
     const [tipos] = await pool.query(
-        `SELECT t.id, t.nombre, t.categoria_general, l.id AS termino_legal_id,
+        `SELECT t.id, t.codigo, t.nombre, t.categoria_general, l.id AS termino_legal_id,
                 l.dias, l.tipo_dias, l.fundamento_legal
          FROM tipos_tramite AS t
          JOIN terminos_legales AS l ON l.tipo_tramite_id = t.id
@@ -304,8 +305,8 @@ app.post('/api/radicados', permitirRoles('administrador', 'ventanilla'), recibir
 
         // Extracción limpia de los campos del formulario
         const {
-            tipo_comunicacion,
             tipo_recepcion,
+            tipo_comunicacion,
             tipo_tramite_id,
             tipo_documento,
             remitente_nombre,
@@ -320,6 +321,11 @@ app.post('/api/radicados', permitirRoles('administrador', 'ventanilla'), recibir
             asunto_documento,
             usuario_recibe
         } = req.body;
+
+        if (!['Interna', 'Externa'].includes(tipo_comunicacion)) {
+            archivos.forEach(eliminarArchivoSubido);
+            return responderError(res, 400, 'La clase de comunicación debe ser Interna o Externa.');
+        }
 
         // Validación obligatoria para evitar errores de base de datos
         if (!asunto_documento || !remitente_nombre || !remitente_documento) {
@@ -339,11 +345,6 @@ app.post('/api/radicados', permitirRoles('administrador', 'ventanilla'), recibir
         if (folios === null) {
             archivos.forEach(eliminarArchivoSubido);
             return responderError(res, 400, 'El número de folios debe ser una cantidad entera positiva.');
-        }
-        // “Entrada” se conserva para clientes anteriores; el formulario actual usa Externa/Interna.
-        if (!['Externa', 'Interna', 'Entrada'].includes(tipo_comunicacion)) {
-            archivos.forEach(eliminarArchivoSubido);
-            return responderError(res, 400, 'Selecciona una comunicación externa o interna.');
         }
         const tipoRecepcion = tipo_recepcion === undefined || tipo_recepcion === ''
             ? 'Digital'
@@ -398,6 +399,7 @@ app.post('/api/radicados', permitirRoles('administrador', 'ventanilla'), recibir
                 'El tipo de trámite no tiene un término vigente configurado. Selecciona un tipo válido o solicita su configuración al administrador.'
             );
         }
+        const tipoComunicacion = tipo_comunicacion;
         const fechaLimite = agregarDias(fechaRecepcion, termino.dias, termino.tipo_dias);
         const tiempoRespuesta = obtenerTiempoRespuesta(termino);
         const query = `
@@ -427,8 +429,11 @@ app.post('/api/radicados', permitirRoles('administrador', 'ventanilla'), recibir
             while (true) {
                 numeroRadicado = `RAD-${fechaNumeroRadicado}-${String(consecutivo).padStart(4, '0')}`;
                 const [coincidencias] = await connection.execute(
-                    'SELECT 1 FROM radicados WHERE numero_radicado = ? LIMIT 1',
-                    [numeroRadicado]
+                    `SELECT numero_radicado FROM radicados WHERE numero_radicado = ?
+                     UNION ALL
+                     SELECT numero_radicado FROM radicado_terminos WHERE numero_radicado = ?
+                     LIMIT 1`,
+                    [numeroRadicado, numeroRadicado]
                 );
                 if (!coincidencias.length) break;
                 consecutivo++;
@@ -441,7 +446,7 @@ app.post('/api/radicados', permitirRoles('administrador', 'ventanilla'), recibir
             const values = [
                 numeroRadicado,
                 tipoRecepcion,
-                tipo_comunicacion,
+                tipoComunicacion,
                 termino.nombre,
                 tiempoRespuesta,
                 remitente_nombre,
@@ -458,6 +463,13 @@ app.post('/api/radicados', permitirRoles('administrador', 'ventanilla'), recibir
                 dependencia.id
             ];
             await connection.execute(query, values);
+            const tablaComunicacion = tipoComunicacion === 'Interna'
+                ? 'comunicaciones_internas'
+                : 'comunicaciones_externas';
+            await connection.execute(
+                `INSERT INTO ${tablaComunicacion} (numero_radicado) VALUES (?)`,
+                [numeroRadicado]
+            );
             for (const archivo of archivos) {
                 await connection.execute(
                     `INSERT INTO documentos_radicado
@@ -520,7 +532,8 @@ app.post('/api/radicados', permitirRoles('administrador', 'ventanilla'), recibir
                 tipo_dias: termino.tipo_dias,
                 fundamento_legal: termino.fundamento_legal,
                 fecha_limite: fechaLimite
-            }
+            },
+            tipo_comunicacion: tipoComunicacion
         });
 
     } catch (error) {
@@ -554,7 +567,13 @@ app.get('/api/tipos-tramite', async (req, res) => {
              ORDER BY COALESCE(NULLIF(t.orden, 0), 999) ASC, t.id ASC`,
             [hoy, hoy, incluirInactivos === '1' ? 1 : 0]
         );
-        return res.json({ success: true, tipos_tramite: rows });
+        return res.json({
+            success: true,
+            tipos_tramite: rows.map((tipo) => ({
+                ...tipo,
+                tipo_comunicacion: clasificarTipoTramite(tipo.codigo)
+            }))
+        });
     } catch (error) {
         console.error('Error al consultar los tipos de trámite:', error);
         return responderError(res, 500, 'Error interno al consultar los tipos de trámite.');
@@ -572,7 +591,13 @@ app.get('/api/tipos-tramite/:id', protegerAdministracion, async (req, res, next)
             [id]
         );
         if (!rows.length) return responderError(res, 404, 'Tipo de tramite no encontrado.');
-        return res.json({ success: true, tipo_tramite: rows[0] });
+        return res.json({
+            success: true,
+            tipo_tramite: {
+                ...rows[0],
+                tipo_comunicacion: clasificarTipoTramite(rows[0].codigo)
+            }
+        });
     } catch (error) { next(error); }
 });
 
@@ -781,8 +806,28 @@ app.post('/api/terminos-legales', protegerAdministracion, async (req, res) => {
 
 // Ruta para obtener los radicados con el semáforo calculado
 app.get('/api/radicados', async (req, res) => {
+    const claseSolicitada = req.query.tipo_comunicacion;
+    if (claseSolicitada !== undefined &&
+        (typeof claseSolicitada !== 'string' ||
+            !['interna', 'externa'].includes(claseSolicitada.trim().toLowerCase()))) {
+        return responderError(res, 400, 'tipo_comunicacion debe ser Interna o Externa.');
+    }
     try {
         const filtro = filtroDependencia(req.usuario);
+        const claseNormalizada = typeof claseSolicitada === 'string'
+            ? claseSolicitada.trim().toLowerCase()
+            : null;
+        const filtroClase = claseNormalizada === 'interna'
+            ? `AND EXISTS (
+                   SELECT 1 FROM comunicaciones_internas AS ci
+                   WHERE ci.numero_radicado = r.numero_radicado
+               )`
+            : claseNormalizada === 'externa'
+                ? `AND EXISTS (
+                       SELECT 1 FROM comunicaciones_externas AS ce
+                       WHERE ce.numero_radicado = r.numero_radicado
+                   )`
+                : '';
         const [rows] = await pool.query(
             `SELECT r.*,
                     rt.fecha_recepcion AS termino_fecha_recepcion,
@@ -798,6 +843,7 @@ app.get('/api/radicados', async (req, res) => {
              LEFT JOIN radicado_terminos AS rt ON rt.numero_radicado = r.numero_radicado
              LEFT JOIN tipos_tramite AS t ON t.id = rt.tipo_tramite_id
              WHERE ${filtro.sql}
+               ${filtroClase}
              ORDER BY r.fecha_creacion DESC`,
             filtro.valores
         );

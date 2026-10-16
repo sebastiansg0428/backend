@@ -1,5 +1,28 @@
 # Backend de Ventanilla Unica
 
+## Términos legales generales
+
+La migración [016_terminos_generales_peticion.sql](migrations/016_terminos_generales_peticion.sql)
+registra, para tipos sin ningún término previo, 10 días hábiles para información
+y documentos, 30 para consultas y 15 para peticiones generales. Los términos se
+guardan con vigencia desde la fecha local de Bogotá en que se ejecute. La
+migración es idempotente: no duplica ni reemplaza términos existentes y no
+modifica los términos históricos aplicados a radicados.
+
+Esta migración no agrega términos a las categorías `entre_autoridades` y
+`especial`, porque requieren identificar el subtipo, la norma especial o la
+competencia de la entidad. Si ya tienen términos, la migración los conserva;
+si no, permanecen fuera del selector de radicación hasta que un administrador
+registre un término validado en Gestión de catálogos.
+
+Haz una copia de seguridad y ejecuta el contenido de la migración una sola vez
+en phpMyAdmin, seleccionando la base `ventanilla_unica`. Requiere que ya existan
+`tipos_tramite` y `terminos_legales` y que el catálogo esté cargado; si las
+migraciones 001 y 002 ya se aplicaron, no las vuelvas a ejecutar. Esta migración
+solo completa tipos sin ningún término previo: conserva cualquier término
+existente, incluidos los que requieran revisión jurídica. No la ejecutes sobre
+otra base.
+
 ## Campos de recepción documental
 
 Antes de iniciar esta versión, respalda la base de datos y aplica una sola vez
@@ -213,6 +236,23 @@ La migración crea el contador anual y la tabla de documentos asociados a cada
 radicado. Conserva los adjuntos actuales y sincroniza el contador con radicados
 que ya tengan el formato `RAD-AAAA-####` o `RAD-AAAAMMDD-####`. Respalda la base de datos y revisa el
 esquema antes de aplicarla.
+
+Para clasificar las comunicaciones, respalda la base de datos y aplica una sola
+vez [015_comunicaciones_internas_externas.sql](migrations/015_comunicaciones_internas_externas.sql)
+después de las migraciones anteriores (incluida la 014). La migración crea las tablas
+`comunicaciones_internas` y `comunicaciones_externas`, conserva `radicados` como
+tabla común y distribuye los registros existentes sin borrar ni renumerar datos.
+La clasificación de históricos conserva `radicados.tipo_comunicacion` cuando ya
+es Interna o Externa; para valores antiguos usa el tipo de trámite asociado.
+
+En nuevas radicaciones el servidor determina la clase por el código del trámite:
+`derecho_peticion`, `solicitud`, `informativo`, `notificacion` y
+`notificacion_judicial` son internas; los demás trámites activos son externos.
+El cliente no puede cambiar esta clasificación enviando otro valor.
+`GET /api/tipos-tramite` incluye `tipo_comunicacion`, y
+`GET /api/radicados?tipo_comunicacion=Interna` o `Externa` permite filtrar por
+la tabla correspondiente. Esta versión no registra un sentido recibido o
+despachado.
 
 Para crear o editar una dependencia:
 

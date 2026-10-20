@@ -104,6 +104,30 @@ test('valida la estructura PDF en radicacion y respuestas sin alterar el almacen
         assert.equal((await respuesta.json()).message, 'La clase de comunicación debe ser Interna o Externa.');
         assert.equal(conexiones, conexionesAntes);
     }
+    await t.test('/api/radicados: rechaza asunto mayor a 5000 caracteres y limpia la carga', async () => {
+        const conexionesAntes = conexiones;
+        const anteriores = new Set(archivosPropios);
+        const form = new FormData();
+        form.append('asunto_documento', 'a'.repeat(5001));
+        form.append('remitente_nombre', 'Remitente');
+        form.append('remitente_documento', '123');
+        form.append('dependencia_destino_id', '2');
+        form.append('tipo_tramite_id', '1');
+        form.append('tipo_comunicacion', 'Externa');
+        form.append('archivos', new Blob([pdfClasico], { type: 'application/pdf' }), 'adjunto.pdf');
+        const respuesta = await fetch(url + '/api/radicados', {
+            method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: form
+        });
+        assert.equal(respuesta.status, 400);
+        assert.deepEqual(await respuesta.json(), {
+            success: false, message: 'El asunto no puede superar 5000 caracteres.'
+        });
+        assert.equal(conexiones, conexionesAntes);
+        const nuevos = [...archivosPropios].filter(archivo => !anteriores.has(archivo));
+        for (const archivo of nuevos) {
+            await assert.rejects(fs.access(archivo), { code: 'ENOENT' });
+        }
+    });
     const invalidos = [
         ['texto con firma falsificada', Buffer.from('%PDF-1.4\nNo es un PDF\n%%EOF')],
         ['HTML con firma incrustada', Buffer.from('<html>%PDF-1.4\n%%EOF</html>')],

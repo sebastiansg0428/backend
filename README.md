@@ -18,6 +18,9 @@ dependencias activas y atribuye respuestas históricas a la dependencia del auto
 cuando puede determinarla. La migración no se ejecuta automáticamente; reinicia
 el backend después de aplicarla. Las dependencias nuevas o reactivadas reciben
 asignaciones para los radicados globales existentes.
+La creación o reactivación y sus asignaciones se confirman en una misma
+transacción: si falla la asignación de seguimientos, se revierte también la
+creación o el cambio de estado. Solo se devuelve éxito después del `commit`.
 
 ## Términos legales generales
 

@@ -254,15 +254,32 @@ router.post('/dependencias', autenticar, permitirRoles('administrador'), async (
     if (!nombre || nombre.length > 150) {
         return errorHTTP(res, 400, 'El nombre de la dependencia es obligatorio (maximo 150 caracteres).');
     }
+    let connection;
     try {
-        const [result] = await pool.execute('INSERT INTO dependencias (nombre) VALUES (?)', [nombre]);
-        await pool.execute(
+        connection = await pool.getConnection();
+        await connection.beginTransaction();
+        const [result] = await connection.execute('INSERT INTO dependencias (nombre) VALUES (?)', [nombre]);
+        await connection.execute(
             `INSERT IGNORE INTO radicado_dependencias (numero_radicado, dependencia_id)
              SELECT numero_radicado, ? FROM radicados WHERE destino_todas_dependencias = 1`,
             [result.insertId]
         );
+        await connection.commit();
         res.status(201).json({ success: true, dependencia: { id: result.insertId, nombre, activo: 1 } });
-    } catch (error) { next(error); }
+    } catch (error) {
+        if (connection) {
+            try {
+                await connection.rollback();
+            } catch (rollbackError) {
+                connection.destroy();
+                connection = undefined;
+                return next(new AggregateError([error, rollbackError], 'Error al crear la dependencia y revertir la transaccion.'));
+            }
+        }
+        next(error);
+    } finally {
+        if (connection) connection.release();
+    }
 });
 
 router.get('/dependencias/:id', autenticar, permitirRoles('administrador'), async (req, res, next) => {
@@ -297,21 +314,41 @@ router.patch('/dependencias/:id/estado', autenticar, permitirRoles('administrado
     if (!Number.isSafeInteger(id) || id < 1 || (activo !== 0 && activo !== 1)) {
         return errorHTTP(res, 400, 'Indica un ID valido y activo como 0 o 1.');
     }
+    let connection;
     try {
-        const [result] = await pool.execute('UPDATE dependencias SET activo = ? WHERE id = ?', [activo, id]);
-        if (!result.affectedRows) return errorHTTP(res, 404, 'Dependencia no encontrada.');
+        connection = await pool.getConnection();
+        await connection.beginTransaction();
+        const [result] = await connection.execute('UPDATE dependencias SET activo = ? WHERE id = ?', [activo, id]);
+        if (!result.affectedRows) {
+            await connection.rollback();
+            return errorHTTP(res, 404, 'Dependencia no encontrada.');
+        }
         if (activo === 1) {
-            await pool.execute(
+            await connection.execute(
                 `INSERT IGNORE INTO radicado_dependencias (numero_radicado, dependencia_id)
                  SELECT numero_radicado, ? FROM radicados WHERE destino_todas_dependencias = 1`,
                 [id]
             );
         }
+        await connection.commit();
         res.json({
             success: true, dependencia: { id, activo },
             message: activo === 1 ? 'Dependencia activada.' : 'Dependencia inactivada.'
         });
-    } catch (error) { next(error); }
+    } catch (error) {
+        if (connection) {
+            try {
+                await connection.rollback();
+            } catch (rollbackError) {
+                connection.destroy();
+                connection = undefined;
+                return next(new AggregateError([error, rollbackError], 'Error al cambiar el estado de la dependencia y revertir la transaccion.'));
+            }
+        }
+        next(error);
+    } finally {
+        if (connection) connection.release();
+    }
 });
 
 router.get('/usuarios/ventanilla', autenticar, permitirRoles('administrador'), async (req, res, next) => {

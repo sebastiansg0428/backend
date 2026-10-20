@@ -144,7 +144,7 @@ test('administrador gestiona catalogos con baja logica y conserva permisos, refe
             execute: ejecutar,
             async commit() { commits++; },
             async rollback() { rollbacks++; ({ dependencias, tipos, terminos } = copia); },
-            release() {}
+            release() { }
         };
     });
     const errores = [];
@@ -230,7 +230,7 @@ test('administrador gestiona catalogos con baja logica y conserva permisos, refe
         assert.equal((await archivoRadicado(campos)).status, 422);
     }
     assert.equal((await pedir('/tipos-tramite', 0, 'POST', datosTipo)).status, 201);
-    assert.equal(commits, 1);
+    assert.equal(commits, 3);
     assert.equal((await pedir('/tipos-tramite/1', 0, 'PUT', editarTipo)).status, 200);
     assert.equal((await pedir('/tipos-tramite/1/estado', 0, 'PATCH', { activo: 0 })).status, 200);
     assert.equal((await pedir('/tipos-tramite/1')).status, 200);
@@ -259,7 +259,7 @@ test('administrador gestiona catalogos con baja logica y conserva permisos, refe
         fundamento_legal: 'Nueva regla', vigente_desde: '2099-01-01'
     };
     assert.equal((await pedir('/terminos-legales', 0, 'POST', nuevoTermino)).status, 201);
-    assert.equal(commits, 2);
+    assert.equal(commits, 5);
     assert.equal(terminos[0].vigente_hasta, '2098-12-31');
     assert.equal(terminos.at(-1).dias, 20);
     assert.deepEqual(radicado, copiaRadicado);

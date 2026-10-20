@@ -346,6 +346,11 @@ app.post('/api/radicados', permitirRoles('administrador', 'ventanilla'), recibir
             return responderError(res, 400, 'Faltan campos obligatorios (Asunto, Nombre o Documento del remitente).');
         }
 
+        if (String(asunto_documento).length > 5000) {
+            archivos.forEach(eliminarArchivoSubido);
+            return responderError(res, 400, 'El asunto no puede superar 5000 caracteres.');
+        }
+
         const validarCantidad = (valor, minimo, maximo, predeterminado) => {
             if (valor === undefined || valor === '') return predeterminado;
             if (!/^\d+$/.test(String(valor))) return null;

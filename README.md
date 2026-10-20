@@ -84,6 +84,19 @@ npm test
 Reinicia el proceso Node.js despues de modificar el backend; `npm start` no
 recarga los archivos automaticamente.
 
+### Manejo de fallos en ampliaciones
+
+`POST /api/radicados/:numero_radicado/ampliaciones` adquiere la conexion dentro
+del bloque de manejo de errores. Ante fallos de conexion o transaccion devuelve
+HTTP 500 con un mensaje controlado y registra el detalle en el servidor. Si la
+reversion falla, descarta la conexion en lugar de devolverla al pool; no
+reintenta una reversion fallida de una salida de validacion. Conserva los
+permisos administrativos y las validaciones de vencimiento y fechas.
+
+Prueba focalizada: `node --test test\ampliaciones.test.js`. Usa MySQL simulado y
+cubre adquisicion, inicio, consultas, escrituras, confirmacion y reversion,
+ademas del flujo exitoso y los rechazos de negocio.
+
 ## Validacion de integracion MySQL local
 
 Haz la validacion en una base separada, por ejemplo `ventanilla_unica_test`, y

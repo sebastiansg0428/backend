@@ -1066,8 +1066,10 @@ app.post(
             );
         }
 
-        const connection = await pool.getConnection();
+        let connection;
+        let reversionIntentada = false;
         try {
+            connection = await pool.getConnection();
             await connection.beginTransaction();
             const [radicados] = await connection.execute(
                 `SELECT r.estado, rt.fecha_limite_actual
@@ -1077,6 +1079,7 @@ app.post(
                 [req.params.numero_radicado]
             );
             if (radicados.length === 0) {
+                reversionIntentada = true;
                 await connection.rollback();
                 return responderError(res, 404, 'No se encontró el radicado o no tiene término aplicado.');
             }
@@ -1088,14 +1091,17 @@ app.post(
             );
             const hoy = obtenerFechaLocal(new Date(), 'fecha actual');
             if (String(radicado.estado || '').trim().toLowerCase() === 'respondido') {
+                reversionIntentada = true;
                 await connection.rollback();
                 return responderError(res, 409, 'No se puede ampliar un radicado que ya fue respondido.');
             }
             if (hoy > fechaLimiteAnterior) {
+                reversionIntentada = true;
                 await connection.rollback();
                 return responderError(res, 409, 'La ampliación debe registrarse antes del vencimiento.');
             }
             if (fecha_limite_nueva <= fechaLimiteAnterior) {
+                reversionIntentada = true;
                 await connection.rollback();
                 return responderError(res, 400, 'La nueva fecha límite debe ser posterior a la vigente.');
             }
@@ -1138,11 +1144,28 @@ app.post(
                 message: 'Ampliación registrada. Verifica que se cumplan los requisitos legales aplicables.'
             });
         } catch (error) {
-            await connection.rollback();
-            console.error('Error al registrar ampliación de término:', error);
+            let errorRegistro = error;
+            if (connection) {
+                if (reversionIntentada) {
+                    connection.destroy();
+                    connection = undefined;
+                } else {
+                    try {
+                        await connection.rollback();
+                    } catch (rollbackError) {
+                        errorRegistro = new AggregateError(
+                            [error, rollbackError],
+                            'Error al registrar la ampliacion y revertir la transaccion.'
+                        );
+                        connection.destroy();
+                        connection = undefined;
+                    }
+                }
+            }
+            console.error('Error al registrar ampliación de término:', errorRegistro);
             return responderError(res, 500, 'Error interno al registrar la ampliación.');
         } finally {
-            connection.release();
+            if (connection) connection.release();
         }
     }
 );

@@ -494,7 +494,12 @@ definitiva. Los archivos corruptos, truncados o cifrados que la biblioteca no
 puede leer se rechazan con 400; se eliminan todos los adjuntos de esa solicitud
 sin guardar registros. Los errores de lectura del disco devuelven 500 y tambien
 activan la limpieza. No se reescriben los bytes del documento ni se modifican
-las carpetas, nombres UUID o limites existentes. Esta validacion estructural
+las carpetas, nombres UUID o limites existentes. Los PDFs cifrados detectados
+por `pdf-lib` reciben un mensaje especifico indicando que no se pueden validar
+y solicitando una copia sin proteccion solo si el usuario tiene autorizacion.
+No se solicitan ni almacenan contrasenas, ni se omite la validacion de cifrado.
+Los demas PDFs invalidos conservan el mensaje generico y HTTP 400.
+Esta validacion estructural
 no sustituye un analisis antimalware ni elimina contenido activo de un PDF.
 
 Los radicados nuevos usan el formato `RAD-AAAAMMDD-####`, por ejemplo

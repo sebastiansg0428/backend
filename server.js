@@ -4,7 +4,7 @@ const crearMiddlewareCors = require('./cors');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
-const { PDFDocument } = require('pdf-lib');
+const { PDFDocument, EncryptedPDFError } = require('pdf-lib');
 const pool = require('./db');
 const calcularSemaforoBackend = require('./semaforo');
 const { agregarDias, obtenerFechaLocal } = require('./semaforo');
@@ -116,12 +116,13 @@ const opcionesCargaPdf = {
 const upload = multer({ storage, ...opcionesCargaPdf });
 const uploadRespuesta = multer({ storage: storageRespuesta, ...opcionesCargaPdf });
 
-async function esArchivoPdfValido(archivo) {
-    if (!archivo || archivo.size < 5) return false;
+async function validarArchivoPdf(archivo) {
+    const errorPdfInvalido = 'Uno o más archivos no contienen un PDF válido.';
+    if (!archivo || archivo.size < 5) return errorPdfInvalido;
     const contenido = await fs.promises.readFile(archivo.path);
     if (!/^%PDF-\d\.\d[\r\n]/.test(contenido.subarray(0, 9).toString('ascii')) ||
         !/%%EOF[\x00\t\n\f\r ]*$/.test(contenido.subarray(-1024).toString('latin1'))) {
-        return false;
+        return errorPdfInvalido;
     }
     try {
         const documento = await PDFDocument.load(contenido, {
@@ -129,10 +130,15 @@ async function esArchivoPdfValido(archivo) {
             updateMetadata: false
         });
         documento.getPages();
-        return true;
+        return null;
     } catch (error) {
         console.warn('PDF rechazado durante la validacion de estructura:', error.message);
-        return false;
+        // pdf-lib transpila este error sin conservar su prototipo de subclase.
+        if (error instanceof EncryptedPDFError ||
+            (error instanceof Error && error.message === new EncryptedPDFError().message)) {
+            return 'El archivo PDF está cifrado o protegido con contraseña y no se puede validar. Adjunta una copia sin protección, si tienes autorización para hacerlo.';
+        }
+        return errorPdfInvalido;
     }
 }
 
@@ -310,9 +316,10 @@ app.post('/api/radicados', permitirRoles('administrador', 'ventanilla'), recibir
             return responderError(res, 400, 'Adjunta al menos un archivo PDF.');
         }
         for (const archivo of archivos) {
-            if (!await esArchivoPdfValido(archivo)) {
+            const errorPdf = await validarArchivoPdf(archivo);
+            if (errorPdf) {
                 archivos.forEach(eliminarArchivoSubido);
-                return responderError(res, 400, 'Uno o más archivos no contienen un PDF válido.');
+                return responderError(res, 400, errorPdf);
             }
         }
 
@@ -1186,9 +1193,10 @@ app.post(
         let connection;
         try {
             for (const archivo of req.files || []) {
-                if (!await esArchivoPdfValido(archivo)) {
+                const errorPdf = await validarArchivoPdf(archivo);
+                if (errorPdf) {
                     (req.files || []).forEach(eliminarArchivoSubido);
-                    return responderError(res, 400, 'Uno o más archivos no contienen un PDF válido.');
+                    return responderError(res, 400, errorPdf);
                 }
             }
             connection = await pool.getConnection();

@@ -144,7 +144,10 @@ test('valida la estructura PDF en radicacion y respuestas sin alterar el almacen
                 const respuesta = await subir(ruta, [pdfComprimido, contenido]);
                 assert.equal(respuesta.status, 400);
                 assert.deepEqual(await respuesta.json(), {
-                    success: false, message: 'Uno o más archivos no contienen un PDF válido.'
+                    success: false,
+                    message: contenido === pdfCifrado
+                        ? 'El archivo PDF está cifrado o protegido con contraseña y no se puede validar. Adjunta una copia sin protección, si tienes autorización para hacerlo.'
+                        : 'Uno o más archivos no contienen un PDF válido.'
                 });
                 assert.equal(conexiones, conexionesAntes);
                 const nuevos = [...archivosPropios].filter(archivo => !anteriores.has(archivo));

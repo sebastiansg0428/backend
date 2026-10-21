@@ -51,7 +51,7 @@ test('valida la estructura PDF en radicacion y respuestas sin alterar el almacen
     };
     t.mock.method(pool, 'execute', async (sql, valores) => {
         if (sql.includes('FROM usuarios u')) return [[usuario]];
-        if (sql.includes('FROM dependencias')) return [[{ id: 2, nombre: 'Planeacion' }]];
+        if (sql.includes('FROM dependencias')) return [valores[0] === 99 ? [] : [{ id: 2, nombre: 'Planeacion' }]];
         throw new Error(`Consulta inesperada: ${sql}`);
     });
     t.mock.method(pool, 'query', async sql => {
@@ -80,7 +80,7 @@ test('valida la estructura PDF en radicacion y respuestas sin alterar el almacen
     t.after(() => new Promise((resolve, reject) =>
         server.close(error => error ? reject(error) : resolve())));
     const url = `http://127.0.0.1:${server.address().port}`;
-    const subir = (ruta, contenidos, campo = 'archivos', tipoComunicacion = 'Externa', destino = '2') => {
+    const subir = (ruta, contenidos, campo = 'archivos', tipoComunicacion = 'Externa', destino = '2', cambios = {}) => {
         const form = new FormData();
         form.append('contenido', 'Respuesta institucional de prueba');
         form.append('asunto_documento', 'Prueba PDF');
@@ -89,6 +89,17 @@ test('valida la estructura PDF en radicacion y respuestas sin alterar el almacen
         form.append('dependencia_destino_id', destino);
         form.append('tipo_tramite_id', '1');
         if (tipoComunicacion !== null) form.append('tipo_comunicacion', tipoComunicacion);
+        if (tipoComunicacion === 'Interna') form.append('dependencia_remitente_id', '2');
+        else {
+            form.append('remitente_tipo_persona', 'natural');
+            form.append('remitente_email', 'remitente@example.com');
+        }
+        for (const [nombre, valor] of Object.entries(cambios)) {
+            form.delete(nombre);
+            if (valor !== null) {
+                for (const item of Array.isArray(valor) ? valor : [valor]) form.append(nombre, item);
+            }
+        }
         for (const contenido of contenidos) {
             form.append(campo, new Blob([contenido], { type: 'application/pdf' }), 'adjunto.pdf');
         }
@@ -212,8 +223,70 @@ test('valida la estructura PDF en radicacion y respuestas sin alterar el almacen
             assert.ok(escrituras.slice(escriturasAntes).some(({ sql }) => sql.includes(`INSERT INTO ${tabla}`)));
             const insertRadicado = escrituras.slice(escriturasAntes).find(({ sql }) => sql.includes('INSERT INTO radicados'));
             assert.equal(insertRadicado.valores[2], tipoComunicacion);
+            assert.equal(insertRadicado.valores.length, 21);
+            assert.equal((insertRadicado.sql.match(/\?/g) || []).length, 21);
+            assert.deepEqual(insertRadicado.valores.slice(18), tipoComunicacion === 'Interna'
+                ? [2, 'Planeacion', null] : [null, null, 'natural']);
+            assert.equal(resultado.dependencia_remitente, tipoComunicacion === 'Interna' ? 'Planeacion' : null);
         });
     }
+    for (const [nombre, clase, cambios, estado] of [
+        ['interna sin origen', 'Interna', { dependencia_remitente_id: null }, 400],
+        ['interna origen global', 'Interna', { dependencia_remitente_id: 'todas' }, 400],
+        ['interna origen decimal', 'Interna', { dependencia_remitente_id: '2.0' }, 400],
+        ['interna origen repetido', 'Interna', { dependencia_remitente_id: ['2', '3'] }, 400],
+        ['interna origen no seguro', 'Interna', { dependencia_remitente_id: '9007199254740992' }, 400],
+        ['interna origen ausente o inactivo', 'Interna', { dependencia_remitente_id: '99' }, 422],
+        ['interna con persona externa', 'Interna', { remitente_tipo_persona: 'natural' }, 400],
+        ['externa con origen', 'Externa', { dependencia_remitente_id: '2' }, 400],
+        ['externa con nombre de origen', 'Externa', { dependencia_remitente: 'Planeacion' }, 400],
+        ['externa sin persona', 'Externa', { remitente_tipo_persona: null }, 400],
+        ['externa persona inválida', 'Externa', { remitente_tipo_persona: 'otra' }, 400],
+        ['externa sin correo', 'Externa', { remitente_email: null }, 400],
+        ['externa correo inválido', 'Externa', { remitente_email: 'invalido' }, 400],
+        ['externa correo largo', 'Externa', { remitente_email: 'a'.repeat(140) + '@example.com' }, 400],
+        ['externa correo repetido', 'Externa', { remitente_email: ['a@example.com', 'b@example.com'] }, 400],
+        ['jurídica sin razón', 'Externa', { remitente_tipo_persona: 'juridica', remitente_nit: '123' }, 400],
+        ['jurídica sin NIT', 'Externa', { remitente_tipo_persona: 'juridica', remitente_entidad: 'Empresa' }, 400],
+        ['jurídica NIT inválido', 'Externa', { remitente_tipo_persona: 'juridica', remitente_entidad: 'Empresa', remitente_nit: 'ABC' }, 400],
+        ['nombre vacío', 'Externa', { remitente_nombre: '  ' }, 400],
+        ['cédula inválida', 'Interna', { remitente_documento: 'abc' }, 400],
+        ['jurídica sin cédula de contacto', 'Externa', { remitente_tipo_persona: 'juridica',
+            remitente_entidad: 'Empresa', remitente_nit: '123', remitente_documento: null }, 400],
+        ['entidad excedida', 'Externa', { remitente_entidad: 'a'.repeat(151) }, 400],
+    ]) {
+        await t.test(`procedencia: rechaza ${nombre} y limpia adjuntos`, async () => {
+            const anteriores = new Set(archivosPropios);
+            const conexionesAntes = conexiones;
+            const respuesta = await subir('/api/radicados', [pdfClasico], 'archivos', clase, '2', cambios);
+            assert.equal(respuesta.status, estado);
+            assert.equal((await respuesta.json()).success, false);
+            assert.equal(conexiones, conexionesAntes);
+            const nuevos = [...archivosPropios].filter(archivo => !anteriores.has(archivo));
+            assert.equal(nuevos.length, 1);
+            await assert.rejects(fs.access(nuevos[0]), { code: 'ENOENT' });
+        });
+    }
+    await t.test('interna ignora nombre falsificado y admite mismo origen y destino sin correo', async () => {
+        const respuesta = await subir('/api/radicados', [pdfClasico], 'archivos', 'Interna', '2',
+            { dependencia_remitente: 'Nombre falso' });
+        assert.equal(respuesta.status, 200);
+        const resultado = await respuesta.json();
+        assert.equal(resultado.dependencia_remitente, 'Planeacion');
+        assert.equal(resultado.dependencia_remitente_id, 2);
+        assert.equal(resultado.remitente_tipo_persona, null);
+    });
+    await t.test('externa jurídica persiste clasificación y datos de contacto', async () => {
+        const respuesta = await subir('/api/radicados', [pdfClasico], 'archivos', 'Externa', '2',
+            { remitente_tipo_persona: 'juridica', remitente_entidad: 'Empresa', remitente_nit: '123456789012' });
+        assert.equal(respuesta.status, 200);
+        assert.equal((await respuesta.json()).remitente_tipo_persona, 'juridica');
+        const registro = escrituras.filter(({ sql }) => sql.includes('INSERT INTO radicados')).at(-1);
+        assert.equal(registro.valores[7], 'Empresa');
+        assert.equal(registro.valores[8], '123456789012');
+        assert.equal(registro.valores[10], 'remitente@example.com');
+        assert.deepEqual(registro.valores.slice(18), [null, null, 'juridica']);
+    });
     await t.test('radicacion global se guarda sin ID de dependencia y con marca compartida', async () => {
         const escriturasAntes = escrituras.length;
         const respuesta = await subir('/api/radicados', [pdfClasico], 'archivos', 'Externa', 'todas');

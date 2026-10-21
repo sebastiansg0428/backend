@@ -49,6 +49,7 @@ este orden, deteniendote si un paso falla:
 | 016 | [016_terminos_generales_peticion.sql](migrations/016_terminos_generales_peticion.sql) |
 | 017 | [017_destino_todas_dependencias.sql](migrations/017_destino_todas_dependencias.sql) |
 | 018 | [018_seguimiento_por_dependencia.sql](migrations/018_seguimiento_por_dependencia.sql) |
+| 019 | [019_procedencia_radicados.sql](migrations/019_procedencia_radicados.sql) |
 
 Las migraciones SQL no son todas idempotentes y los cambios DDL pueden quedar
 confirmados aunque un paso posterior falle: no vuelvas a importar toda la
@@ -71,6 +72,12 @@ y el INSERT actual. No conecta a MySQL ni valida toda la sintaxis SQL, las
 collations reales o los efectos de los scripts JS.
 **La instalacion completa desde cero aun requiere una ejecucion de aceptacion
 en una base aislada; no se ha ejecutado como parte de esta mejora.**
+
+La migración 019 sí se aplicó y verificó en la base local existente, después
+de respaldar estructura. Una conexión nueva confirmó columnas NULLables,
+índice/FK y conservación de los cinco registros previos mediante comparación
+de sus campos originales. No se crearon radicados reales de prueba.
+Esta comprobación no sustituye una prueba de radicación de extremo a extremo.
 
 Cuando se autorice esa validacion, importa la secuencia completa en una base
 de prueba vacia, comprueba las FKs y columnas con `SHOW CREATE TABLE`, las 24
@@ -182,7 +189,7 @@ ademas del flujo exitoso y los rechazos de negocio.
 
 Haz la validacion en una base separada, por ejemplo `ventanilla_unica_test`, y
 usa exclusivamente datos ficticios. Para prepararla desde cero, sigue la
-secuencia 000-018 de la seccion de instalacion nueva. Tambien puedes importar
+secuencia 000-019 de la seccion de instalacion nueva. Tambien puedes importar
 solo la estructura de una base compatible (sin filas), pero esa alternativa
 no demuestra que la secuencia de instalacion limpia sea ejecutable.
 
@@ -395,14 +402,55 @@ tabla común y distribuye los registros existentes sin borrar ni renumerar datos
 La clasificación de históricos conserva `radicados.tipo_comunicacion` cuando ya
 es Interna o Externa; para valores antiguos usa el tipo de trámite asociado.
 
-En nuevas radicaciones el servidor determina la clase por el código del trámite:
-`derecho_peticion`, `solicitud`, `informativo`, `notificacion` y
-`notificacion_judicial` son internas; los demás trámites activos son externos.
-El cliente no puede cambiar esta clasificación enviando otro valor.
-`GET /api/tipos-tramite` incluye `tipo_comunicacion`, y
+En nuevas radicaciones el cliente elige `tipo_comunicacion` (`Interna` o
+`Externa`), independientemente del trámite, y el servidor valida esa selección.
+La clasificación sugerida por el catálogo no sustituye este campo obligatorio.
 `GET /api/radicados?tipo_comunicacion=Interna` o `Externa` permite filtrar por
 la tabla correspondiente. Esta versión no registra un sentido recibido o
 despachado.
+
+### Procedencia de las comunicaciones (019)
+
+Aplica una sola vez [019_procedencia_radicados.sql](migrations/019_procedencia_radicados.sql)
+después de 018, revisando antes `SHOW CREATE TABLE radicados` y
+`SHOW CREATE TABLE dependencias` y respaldando la estructura fuera del repositorio.
+El ID de origen es `INT`, igual al ID del catálogo. `ALTER TABLE` implica commit;
+no se debe prometer rollback transaccional ni reejecutar sobre un estado parcial.
+Esta migración agrega tres columnas NULLables, índice y FK sin cascadas. No
+modifica ni deduce la procedencia de registros históricos.
+
+En `POST /api/radicados` (multipart, con los adjuntos y campos habituales):
+
+| Clase | Campos adicionales y reglas |
+| --- | --- |
+| Interna | `dependencia_remitente_id`: ID entero positivo de una oficina activa; sin opción `todas`. El servidor resuelve y guarda `dependencia_remitente` como nombre histórico, ignorando nombres enviados por el cliente. No enviar `remitente_tipo_persona`. |
+| Externa | `remitente_tipo_persona`: `natural` o `juridica`; `remitente_email` válido, máximo 150 caracteres. No enviar origen institucional. |
+| Externa jurídica | Además, `remitente_entidad` como razón social, máximo 150 caracteres, y `remitente_nit` de 1 a 12 dígitos. No se verifica el registro fiscal del NIT. |
+
+En ambas clases siguen siendo obligatorios nombre (máximo 150), cédula/documento
+(1 a 10 dígitos) y asunto (máximo 5000). Una jurídica también identifica a su
+persona de contacto con nombre y cédula. El frontend conserva teléfono obligatorio;
+entidad/razón social es obligatoria en externas y queda deshabilitada y no se
+envía en internas. Su texto se conserva al alternar de clase hasta un guardado
+exitoso. El NIT interno permanece habilitado y opcional. El servidor conserva
+la opcionalidad previa de entidad para internas/naturales y valida longitudes.
+No se agrega dirección física.
+El correo solo es obligatorio para externas.
+
+Datos ausentes, formatos incorrectos y combinaciones incompatibles retornan
+400; origen inexistente/inactivo retorna 422. Se eliminan los adjuntos de
+solicitudes rechazadas sin guardar el radicado. El origen puede coincidir con
+el destino; nunca otorga visibilidad ni permisos adicionales al funcionario.
+
+La respuesta de creación incluye `dependencia_remitente_id`,
+`dependencia_remitente` y `remitente_tipo_persona`, también disponibles en los
+listados. El detalle y los comprobantes muestran el nombre histórico de origen;
+en internas antiguas sin ese dato muestran «No registrada».
+
+Despliega frontend/backend coordinadamente y reinicia el backend tras aplicar
+019. Los clientes antiguos que envíen internas sin origen o externas sin tipo
+de persona/correo dejarán de poder crear radicados; las consultas históricas
+no requieren completar esos campos.
 
 Para crear o editar una dependencia:
 
@@ -613,6 +661,41 @@ URL al cerrar el visor. Un iframe/link directo a `/uploads` no puede enviar el
 header y fallara con 401. No pongas el token en la URL.
 
 ## Cambio de estado
+
+### Responsable en el modal de respuesta institucional
+
+`GET /api/radicados/:numero_radicado/respuesta` incluye
+`dependencia_responsable` junto al autor, fecha, contenido y documentos
+existentes. «Ver respuesta» muestra esos datos en el modal **Respuesta
+institucional**, con campos separados «Respondida por», «Dependencia
+responsable» y «Fecha de envío». El detalle del radicado conserva su estado,
+pero no muestra ese bloque ni realiza consultas de respuesta.
+
+`GET /api/radicados/:numero_radicado/respuesta/resumen` permite consultar solo
+`funcionario_nombre`, `dependencia_responsable` y `fecha_envio`, dentro de
+`{ success: true, respuesta: { ... } }`. Si no existe una respuesta institucional
+guardada devuelve HTTP 200 con `respuesta: null`, aunque el estado se haya
+cambiado manualmente a Respondido. Los errores reales devuelven 500, no ausencia.
+No devuelve contenido ni documentos y no descarga PDFs. Se conserva por
+compatibilidad, pero el frontend ya no lo consulta al abrir el detalle.
+
+Conserva la autorización por destino del detalle y de la respuesta completa.
+Para globales, administrador/ventanilla deben enviar `radicado_dependencia_id`
+de una asignación del radicado; el funcionario solo puede consultar la suya.
+IDs malformados se rechazan con 400 y asignaciones ajenas/inexistentes con 404.
+En individuales no se admite una asignación global. Estas comprobaciones se
+comparten con el endpoint de respuesta completa, que conserva su 404 cuando
+todavía no hay respuesta.
+
+La dependencia es el destino atendido, no la
+oficina actual del usuario autor; en globales corresponde a la asignación
+seleccionada. El nombre proviene del usuario relacionado (incluidos autores
+inactivos), no de una instantánea histórica inmutable. Datos ausentes se
+identifican expresamente, sin atribuir una respuesta al remitente.
+
+No cambia la radicación en ventanilla ni habilita bandejas Enviados o permisos
+por origen. No requiere migración. Despliega backend/frontend coordinadamente
+y reinicia el backend para incluir la dependencia en la respuesta completa.
 
 `POST /api/radicados/:numero_radicado/respuesta` acepta `multipart/form-data`
 con `contenido` (10 a 10.000 caracteres), `plantilla` opcional y hasta 5 PDFs

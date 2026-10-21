@@ -327,6 +327,9 @@ app.post('/api/radicados', permitirRoles('administrador', 'ventanilla'), recibir
         const {
             tipo_recepcion,
             tipo_comunicacion,
+            dependencia_remitente_id,
+            dependencia_remitente,
+            remitente_tipo_persona,
             tipo_tramite_id,
             tipo_documento,
             remitente_nombre,
@@ -356,6 +359,62 @@ app.post('/api/radicados', permitirRoles('administrador', 'ventanilla'), recibir
         if (String(asunto_documento).length > 5000) {
             archivos.forEach(eliminarArchivoSubido);
             return responderError(res, 400, 'El asunto no puede superar 5000 caracteres.');
+        }
+
+        const textoValido = (valor, maximo) =>
+            typeof valor === 'string' && valor.trim().length > 0 && valor.length <= maximo;
+        const textoOpcional = (valor, maximo) =>
+            valor === undefined || valor === '' || textoValido(valor, maximo);
+        if (!textoValido(remitente_nombre, 150) ||
+            typeof remitente_documento !== 'string' || !/^\d{1,10}$/.test(remitente_documento) ||
+            !textoValido(asunto_documento, 5000) ||
+            !textoOpcional(remitente_entidad, 150) ||
+            !textoOpcional(remitente_telefono, 50) ||
+            !textoOpcional(remitente_email, 150) ||
+            (remitente_nit !== undefined && remitente_nit !== '' &&
+                (typeof remitente_nit !== 'string' || !/^\d{1,12}$/.test(remitente_nit)))) {
+            archivos.forEach(eliminarArchivoSubido);
+            return responderError(res, 400, 'Los datos del remitente no tienen un formato o longitud válidos.');
+        }
+        let dependenciaRemitente = null;
+        if (tipo_comunicacion === 'Interna') {
+            if (typeof dependencia_remitente_id !== 'string' ||
+                !/^[1-9]\d*$/.test(dependencia_remitente_id) ||
+                !Number.isSafeInteger(Number(dependencia_remitente_id))) {
+                archivos.forEach(eliminarArchivoSubido);
+                return responderError(res, 400, 'Selecciona una dependencia remitente con un ID entero positivo.');
+            }
+            if (remitente_tipo_persona !== undefined && remitente_tipo_persona !== '') {
+                archivos.forEach(eliminarArchivoSubido);
+                return responderError(res, 400, 'El tipo de persona solo corresponde a comunicaciones externas.');
+            }
+            const [origenes] = await pool.execute(
+                'SELECT id, nombre FROM dependencias WHERE id = ? AND activo = 1',
+                [Number(dependencia_remitente_id)]
+            );
+            dependenciaRemitente = origenes[0];
+            if (!dependenciaRemitente) {
+                archivos.forEach(eliminarArchivoSubido);
+                return responderError(res, 422, 'Selecciona una dependencia remitente activa del catálogo.');
+            }
+        } else {
+            if ((dependencia_remitente_id !== undefined && dependencia_remitente_id !== '') ||
+                (dependencia_remitente !== undefined && dependencia_remitente !== '')) {
+                archivos.forEach(eliminarArchivoSubido);
+                return responderError(res, 400, 'Una comunicación externa no puede tener dependencia remitente institucional.');
+            }
+            if (!['natural', 'juridica'].includes(remitente_tipo_persona) ||
+                !textoValido(remitente_email, 150) ||
+                !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(remitente_email)) {
+                archivos.forEach(eliminarArchivoSubido);
+                return responderError(res, 400, 'Para comunicaciones externas selecciona el tipo de persona e indica un correo válido (máximo 150 caracteres).');
+            }
+            if (remitente_tipo_persona === 'juridica' &&
+                (!textoValido(remitente_entidad, 150) ||
+                    typeof remitente_nit !== 'string' || !/^\d{1,12}$/.test(remitente_nit))) {
+                archivos.forEach(eliminarArchivoSubido);
+                return responderError(res, 400, 'Para una persona jurídica indica razón social (máximo 150 caracteres) y NIT de 1 a 12 dígitos.');
+            }
         }
 
         const validarCantidad = (valor, minimo, maximo, predeterminado) => {
@@ -433,10 +492,10 @@ app.post('/api/radicados', permitirRoles('administrador', 'ventanilla'), recibir
         const tiempoRespuesta = obtenerTiempoRespuesta(termino);
         const query = `
             INSERT INTO radicados 
-            (numero_radicado, tipo_recepcion, tipo_comunicacion, tipo_documento, tiempo_de_respuesta, remitente_nombre, remitente_documento, remitente_entidad, remitente_nit, remitente_telefono, remitente_email, numero_folios, fecha_hora_recepcion, dependencia_destino, asunto_documento, usuario_recibe, dependencia_destino_id, destino_todas_dependencias)
+            (numero_radicado, tipo_recepcion, tipo_comunicacion, tipo_documento, tiempo_de_respuesta, remitente_nombre, remitente_documento, remitente_entidad, remitente_nit, remitente_telefono, remitente_email, numero_folios, fecha_hora_recepcion, dependencia_destino, asunto_documento, usuario_recibe, dependencia_destino_id, destino_todas_dependencias, dependencia_remitente_id, dependencia_remitente, remitente_tipo_persona)
             VALUES (?, ?, ?, ?, ?,
                     ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                    ?, ?, ?, ?)
+                    ?, ?, ?, ?, ?, ?, ?)
         `;
 
         const connection = await pool.getConnection();
@@ -490,7 +549,10 @@ app.post('/api/radicados', permitirRoles('administrador', 'ventanilla'), recibir
                 asunto_documento,
                 req.usuario.nombre,
                 dependencia.id,
-                destinoTodasDependencias ? 1 : 0
+                destinoTodasDependencias ? 1 : 0,
+                dependenciaRemitente?.id ?? null,
+                dependenciaRemitente?.nombre ?? null,
+                tipoComunicacion === 'Externa' ? remitente_tipo_persona : null
             ];
             await connection.execute(query, values);
             if (destinoTodasDependencias) {
@@ -564,6 +626,9 @@ app.post('/api/radicados', permitirRoles('administrador', 'ventanilla'), recibir
             fecha_hora_recepcion: fechaHoraRecepcion,
             fecha_hora_recepcion_legible: fechaHoraLegibleBogota(instanteRecepcion),
             dependencia_destino: dependencia.nombre,
+            dependencia_remitente_id: dependenciaRemitente?.id ?? null,
+            dependencia_remitente: dependenciaRemitente?.nombre ?? null,
+            remitente_tipo_persona: tipoComunicacion === 'Externa' ? remitente_tipo_persona : null,
             destino_todas_dependencias: destinoTodasDependencias,
             termino: {
                 dias: termino.dias,
@@ -1002,31 +1067,88 @@ app.get('/api/radicados/:numero_radicado/documentos', autorizarRadicado, async (
     }
 });
 
-// Ventanilla puede consultar la respuesta para orientar al ciudadano;
-// autorizarRadicado mantiene a los funcionarios limitados a su dependencia.
-app.get('/api/radicados/:numero_radicado/respuesta', autorizarRadicado, async (req, res) => {
+async function resolverConsultaRespuesta(req, res, next) {
     try {
         const [radicados] = await pool.execute(
-            'SELECT destino_todas_dependencias FROM radicados WHERE numero_radicado = ?',
+            'SELECT destino_todas_dependencias, dependencia_destino FROM radicados WHERE numero_radicado = ?',
             [req.params.numero_radicado]
         );
+        if (!radicados.length) return responderError(res, 404, 'Radicado no encontrado.');
+        const solicitado = req.query.radicado_dependencia_id;
+        if (solicitado !== undefined &&
+            (typeof solicitado !== 'string' || !/^[1-9]\d*$/.test(solicitado) ||
+                !Number.isSafeInteger(Number(solicitado)))) {
+            return responderError(res, 400, 'La asignación debe ser un entero positivo.');
+        }
         let idAsignacion = null;
-        if (radicados[0]?.destino_todas_dependencias) {
+        let dependenciaResponsable = radicados[0].dependencia_destino;
+        if (radicados[0].destino_todas_dependencias) {
+            let asignaciones;
             if (req.usuario.rol === 'funcionario') {
-                const [asignaciones] = await pool.execute(
-                    `SELECT id FROM radicado_dependencias
-                     WHERE numero_radicado = ? AND dependencia_id = ?`,
+                [asignaciones] = await pool.execute(
+                    `SELECT rd.id, d.nombre FROM radicado_dependencias rd
+                     LEFT JOIN dependencias d ON d.id = rd.dependencia_id
+                     WHERE rd.numero_radicado = ? AND rd.dependencia_id = ?`,
                     [req.params.numero_radicado, req.usuario.dependencia_id]
                 );
-                idAsignacion = asignaciones[0]?.id;
             } else {
-                const solicitado = Number(req.query.radicado_dependencia_id);
-                if (!Number.isSafeInteger(solicitado) || solicitado < 1) {
+                if (solicitado === undefined) {
                     return responderError(res, 400, 'Selecciona la dependencia de seguimiento para consultar la respuesta.');
                 }
-                idAsignacion = solicitado;
+                [asignaciones] = await pool.execute(
+                    `SELECT rd.id, d.nombre FROM radicado_dependencias rd
+                     LEFT JOIN dependencias d ON d.id = rd.dependencia_id
+                     WHERE rd.numero_radicado = ? AND rd.id = ?`,
+                    [req.params.numero_radicado, Number(solicitado)]
+                );
             }
+            if (!asignaciones.length ||
+                (solicitado !== undefined && String(asignaciones[0].id) !== solicitado)) {
+                return responderError(res, 404, 'Asignación no encontrada o fuera de tu dependencia.');
+            }
+            idAsignacion = asignaciones[0].id;
+            dependenciaResponsable = asignaciones[0].nombre;
+        } else if (solicitado !== undefined) {
+            return responderError(res, 400, 'Este radicado no tiene seguimiento global.');
         }
+        res.locals.consultaRespuesta = { idAsignacion, dependenciaResponsable };
+        return next();
+    } catch (error) {
+        console.error('Error al resolver la dependencia de respuesta:', error);
+        return responderError(res, 500, 'No se pudo consultar la dependencia de respuesta.');
+    }
+}
+
+app.get('/api/radicados/:numero_radicado/respuesta/resumen', autorizarRadicado, resolverConsultaRespuesta, async (req, res) => {
+    try {
+        const { idAsignacion, dependenciaResponsable } = res.locals.consultaRespuesta;
+        const [respuestas] = await pool.execute(
+            `SELECT rr.id, rr.fecha_envio, u.nombre AS funcionario_nombre
+             FROM respuestas_radicado rr
+             LEFT JOIN usuarios u ON u.id = rr.usuario_id
+             WHERE rr.numero_radicado = ?
+               AND ((? IS NOT NULL AND rr.radicado_dependencia_id = ?) OR
+                    (? IS NULL AND rr.radicado_dependencia_id IS NULL))
+             ORDER BY rr.id DESC LIMIT 1`,
+            [req.params.numero_radicado, idAsignacion, idAsignacion, idAsignacion]
+        );
+        const respuesta = respuestas[0];
+        return res.json({ success: true, respuesta: respuesta ? {
+            funcionario_nombre: respuesta.funcionario_nombre,
+            dependencia_responsable: dependenciaResponsable,
+            fecha_envio: respuesta.fecha_envio
+        } : null });
+    } catch (error) {
+        console.error('Error al consultar resumen de respuesta:', error);
+        return responderError(res, 500, 'No se pudo consultar el resumen de respuesta.');
+    }
+});
+
+// Ventanilla puede consultar la respuesta para orientar al ciudadano;
+// autorizarRadicado mantiene a los funcionarios limitados a su dependencia.
+app.get('/api/radicados/:numero_radicado/respuesta', autorizarRadicado, resolverConsultaRespuesta, async (req, res) => {
+    try {
+        const { idAsignacion, dependenciaResponsable } = res.locals.consultaRespuesta;
         const [respuestas] = await pool.execute(
             `SELECT rr.id, rr.numero_radicado, rr.contenido, rr.plantilla,
                     rr.fecha_envio, u.nombre AS funcionario_nombre,
@@ -1049,7 +1171,9 @@ app.get('/api/radicados/:numero_radicado/respuesta', autorizarRadicado, async (r
              FROM documentos_respuesta WHERE respuesta_id = ? ORDER BY id`,
             [respuesta.id]
         );
-        return res.json({ success: true, respuesta: { ...respuesta, documentos } });
+        return res.json({ success: true, respuesta: {
+            ...respuesta, dependencia_responsable: dependenciaResponsable, documentos
+        } });
     } catch (error) {
         console.error('Error al consultar respuesta institucional:', error);
         return responderError(res, 500, 'No se pudo consultar la respuesta institucional.');

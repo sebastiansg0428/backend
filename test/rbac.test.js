@@ -86,7 +86,8 @@ test('RBAC HTTP aplica permisos en listas, alertas, archivos, historial y escrit
     t.after(() => { for (const id of usuarios.keys()) revocarSesiones(id); });
     const registros = [
         { id: 1, numero_radicado: 'RAD-P', dependencia_destino_id: 2, dependencia_destino: 'Nombre historico' },
-        { id: 2, numero_radicado: 'RAD-H', dependencia_destino_id: 3, dependencia_destino: 'Hacienda' },
+        { id: 2, numero_radicado: 'RAD-H', dependencia_destino_id: 3, dependencia_destino: 'Hacienda',
+            tipo_comunicacion: 'Interna', dependencia_remitente_id: 2, dependencia_remitente: 'Planeacion' },
         { id: 3, numero_radicado: 'RAD-S', dependencia_destino_id: null, dependencia_destino: 'Planeacion' },
         { id: 4, numero_radicado: 'RAD-G', dependencia_destino_id: null,
             dependencia_destino: 'Todas las dependencias', destino_todas_dependencias: 1 }

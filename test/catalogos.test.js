@@ -220,7 +220,8 @@ test('administrador gestiona catalogos con baja logica y conserva permisos, refe
         form.append('archivos', new Blob([contenidoPdf], { type: 'application/pdf' }), nombreArchivo);
         for (const [campo, valor] of Object.entries({
             asunto_documento: 'Prueba', remitente_nombre: 'Remitente', remitente_documento: '123',
-            tipo_comunicacion: 'Externa', ...campos
+            tipo_comunicacion: 'Externa', remitente_tipo_persona: 'natural',
+            remitente_email: 'remitente@example.com', ...campos
         })) form.append(campo, String(valor));
         return fetch(url + '/radicados', {
             method: 'POST', headers: { Authorization: `Bearer ${tokens[1]}` }, body: form

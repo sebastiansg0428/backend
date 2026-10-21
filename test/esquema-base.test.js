@@ -44,7 +44,14 @@ test('el esquema base y los ALTER de radicados cubren el contrato actual sin con
     for (const retirada of ['nombre_archivo_original', 'ruta_archivo', 'numero_copias', 'declara_firma', 'tipo_movimiento']) {
         assert.equal(columnas.has(retirada), false, `La columna retirada ${retirada} sigue presente`);
     }
-    for (const actual of ['dependencia_destino_id', 'fecha_hora_recepcion', 'destino_todas_dependencias']) {
+    for (const actual of ['dependencia_destino_id', 'fecha_hora_recepcion', 'destino_todas_dependencias',
+        'dependencia_remitente_id', 'dependencia_remitente', 'remitente_tipo_persona']) {
         assert.equal(columnas.has(actual), true);
     }
+    const procedencia = await fs.readFile(path.join(directorio, '019_procedencia_radicados.sql'), 'utf8');
+    assert.match(procedencia, /dependencia_remitente_id INT NULL/);
+    assert.match(procedencia, /dependencia_remitente VARCHAR\(150\) NULL/);
+    assert.match(procedencia, /remitente_tipo_persona VARCHAR\(10\) NULL/);
+    assert.match(procedencia, /FOREIGN KEY \(dependencia_remitente_id\) REFERENCES dependencias\(id\)/);
+    assert.doesNotMatch(procedencia, /\b(?:UPDATE|DELETE|INSERT|CASCADE)\b/i);
 });

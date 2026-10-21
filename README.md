@@ -1,5 +1,86 @@
 # Backend de Ventanilla Unica
 
+## Instalacion nueva y actualizacion
+
+Para una **base vacia**, el punto inicial versionado es
+[000_base_radicados.sql](migrations/000_base_radicados.sql). Define la tabla
+legada minima que necesitan las migraciones posteriores, incluidos los campos
+de adjuntos que la 013 traslada y elimina. No es una copia del esquema de una
+base en uso ni un esquema final para ejecutar solo y arrancar el servidor.
+
+Requisitos de destino: Node.js 22.12 o posterior compatible con las dependencias,
+MySQL 8.0.16+ o MariaDB 10.6+ con InnoDB, claves foraneas y restricciones CHECK
+activas. Usa una base dedicada y vacia con charset `utf8mb4` y collation
+`utf8mb4_unicode_ci`, tambien como valores predeterminados de la base para que
+las columnas de texto de las distintas tablas sean compatibles al crear FKs.
+La cuenta usada para instalar necesita permisos DDL/DML; la cuenta de ejecucion
+debe tener solo los permisos que requiere la aplicacion.
+
+En una terminal del backend configura `DB_HOST`, `DB_USER`, `DB_PASSWORD` y
+`DB_NAME` para la base nueva antes de ejecutar los pasos JavaScript. No guardes
+credenciales en archivos versionados. Por ejemplo, para una futura prueba aislada:
+
+```powershell
+$env:DB_NAME = 'ventanilla_unica_test'
+```
+
+Selecciona **esa misma base** en phpMyAdmin para importar los archivos SQL
+individualmente. No inicies el backend hasta terminar. Ejecuta exactamente en
+este orden, deteniendote si un paso falla:
+
+| Paso | Archivo SQL que importar o comando Node que ejecutar |
+| --- | --- |
+| 000 | [000_base_radicados.sql](migrations/000_base_radicados.sql) |
+| 001 | [001_control_terminos.sql](migrations/001_control_terminos.sql) |
+| 002 | `node migrations\002_actualizar_tipos_tramite.js` |
+| 003 | [003_rbac.sql](migrations/003_rbac.sql) |
+| 004 | [004_respuestas_institucionales.sql](migrations/004_respuestas_institucionales.sql) |
+| 005 | [005_documentos_respuesta.sql](migrations/005_documentos_respuesta.sql) |
+| 006 | [006_usuarios_activos.sql](migrations/006_usuarios_activos.sql) |
+| 007 | [007_dependencias_activas.sql](migrations/007_dependencias_activas.sql) |
+| 008 | [008_secuencia_y_documentos_radicado.sql](migrations/008_secuencia_y_documentos_radicado.sql) |
+| 009 | `node migrations\009_consolidar_dependencias.js` |
+| 010 | [010_limites_login.sql](migrations/010_limites_login.sql) |
+| 011 | [011_campos_recepcion_documental.sql](migrations/011_campos_recepcion_documental.sql) |
+| 012 | [012_retirar_copias_y_declaracion_firma.sql](migrations/012_retirar_copias_y_declaracion_firma.sql) |
+| 013 | [013_normalizar_adjuntos_radicado.sql](migrations/013_normalizar_adjuntos_radicado.sql) |
+| 014 | [014_retirar_tipo_movimiento.sql](migrations/014_retirar_tipo_movimiento.sql) |
+| 015 | [015_comunicaciones_internas_externas.sql](migrations/015_comunicaciones_internas_externas.sql) |
+| 016 | [016_terminos_generales_peticion.sql](migrations/016_terminos_generales_peticion.sql) |
+| 017 | [017_destino_todas_dependencias.sql](migrations/017_destino_todas_dependencias.sql) |
+| 018 | [018_seguimiento_por_dependencia.sql](migrations/018_seguimiento_por_dependencia.sql) |
+
+Las migraciones SQL no son todas idempotentes y los cambios DDL pueden quedar
+confirmados aunque un paso posterior falle: no vuelvas a importar toda la
+secuencia sobre una instalacion parcial. Revisa el error y el esquema antes de
+continuar. Los pasos 002 y 009 deben ejecutarse en su posicion, no al final:
+009 comprueba las referencias existentes antes de que 018 agregue seguimientos.
+La secuencia conserva los catalogos y terminos actuales del proyecto; antes del
+uso institucional revisa los plazos especiales con el responsable juridico.
+
+Para una **base existente**, respalda estructura, datos y adjuntos, identifica
+las migraciones ya aplicadas y ejecuta solo las pendientes en orden. **No
+ejecutes 000** ni recrees `radicados`: no cambia ni reemplaza datos existentes.
+Actualmente no hay un registro automatico de migraciones aplicadas.
+
+### Alcance de la validacion del esquema
+
+La prueba `node --test test\esquema-base.test.js` verifica por lectura de archivos
+los campos base, las adiciones/retiros de columnas, las referencias a radicados
+y el INSERT actual. No conecta a MySQL ni valida toda la sintaxis SQL, las
+collations reales o los efectos de los scripts JS.
+**La instalacion completa desde cero aun requiere una ejecucion de aceptacion
+en una base aislada; no se ha ejecutado como parte de esta mejora.**
+
+Cuando se autorice esa validacion, importa la secuencia completa en una base
+de prueba vacia, comprueba las FKs y columnas con `SHOW CREATE TABLE`, las 24
+dependencias activas, la ausencia de adjuntos en `radicados`, los contadores de
+login y el seguimiento por dependencia. Crea solo cuentas ficticias mediante
+el script de administrador descrito abajo y comprueba login, radicacion con
+PDF, consulta/descarga por roles y respuesta individual/global. No pruebes
+reinstalaciones sobre una base con ciudadanos ni presentes las pruebas con
+MySQL simulado como verificacion de instalacion.
+
 ## Destino para todas las dependencias
 
 Antes de iniciar esta versión, aplica una sola vez
@@ -100,11 +181,10 @@ ademas del flujo exitoso y los rechazos de negocio.
 ## Validacion de integracion MySQL local
 
 Haz la validacion en una base separada, por ejemplo `ventanilla_unica_test`, y
-usa exclusivamente datos ficticios. El repositorio no incluye el DDL inicial de
-`radicados`; las migraciones parten de una tabla ya existente. Por eso, para
-probar la version actual sin datos reales, prepara la base de prueba importando
-solo la estructura de una base compatible (sin filas) y no presentes ese
-procedimiento como una instalacion limpia reproducible desde cero.
+usa exclusivamente datos ficticios. Para prepararla desde cero, sigue la
+secuencia 000-018 de la seccion de instalacion nueva. Tambien puedes importar
+solo la estructura de una base compatible (sin filas), pero esa alternativa
+no demuestra que la secuencia de instalacion limpia sea ejecutable.
 
 Con la base aislada ya preparada, selecciona esa base antes de iniciar o probar
 el backend:
@@ -514,7 +594,7 @@ Los eventos de creacion, estado y ampliacion identifican al actor con su ID en
 
 ### Integracion del frontend (sin cambios automaticos)
 
-El login guarda `token` y `usuario` en localStorage solo para el prototipo; estos
+El frontend React guarda `token` y `usuario` en sessionStorage; estos
 datos no conceden permisos. Al cargar una pantalla, confirma el usuario con
 `GET /api/auth/me`. Un 401 borra la sesion local y redirige a login.
 
@@ -524,6 +604,8 @@ ese selector posteriormente desde la lista de radicados. Oculta acciones de
 recepcion para funcionario y deshabilita `.select-estado` para ventanilla en cada
 renderizado. Marca las acciones administrativas con `data-rol="administrador"`.
 El backend aplica el mismo permiso incluso si se manipula el DOM.
+Las referencias a selectores HTML en esta seccion corresponden a la interfaz
+legada. Las entradas actuales montan React y usan su servicio centralizado de API.
 
 Los PDFs ya no son publicos: tambien requieren Bearer en GET y HEAD. Usa fetch
 autenticado y `URL.createObjectURL(blob)` para mostrar/descargar; revoca el object

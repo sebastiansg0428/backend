@@ -4,7 +4,7 @@ const ESTADOS_EDITABLES = new Map([
     ['recibido', 'Recibido'],
     ['en tramite', 'En trámite'],
     ['pendiente', 'Pendiente'],
-    ['respondido', 'Respondido']
+    ['enterado', 'Enterado']
 ]);
 
 function obtenerEstadoEditable(estado) {
@@ -14,4 +14,12 @@ function obtenerEstadoEditable(estado) {
     return ESTADOS_EDITABLES.get(normalizarTexto(estado)) || null;
 }
 
-module.exports = { obtenerEstadoEditable };
+function requiereRespuesta(registro) {
+    return registro.requiere_respuesta !== 0 && registro.requiere_respuesta !== false;
+}
+
+function esEstadoFinal(estado) {
+    return ['respondido', 'enterado'].includes(normalizarTexto(estado));
+}
+
+module.exports = { obtenerEstadoEditable, requiereRespuesta, esEstadoFinal };

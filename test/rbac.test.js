@@ -276,7 +276,7 @@ test('RBAC HTTP aplica permisos en listas, alertas, archivos, historial y escrit
     })).status, 403);
     assert.equal(conexiones, 0);
     const ajeno = await pedir('/api/radicados/RAD-H/estado?dependencia_id=3', 13, {
-        method: 'PUT', body: JSON.stringify({ estado: 'Respondido', dependencia_id: 3 })
+        method: 'PUT', body: JSON.stringify({ estado: 'En trámite', dependencia_id: 3 })
     });
     assert.equal(ajeno.status, 404);
     assert.deepEqual(await ajeno.json(), {

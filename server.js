@@ -9,7 +9,7 @@ const pool = require('./db');
 const calcularSemaforoBackend = require('./semaforo');
 const { agregarDias, obtenerFechaLocal } = require('./semaforo');
 const { normalizarTexto, obtenerTiempoRespuesta } = require('./plazos');
-const { obtenerEstadoEditable } = require('./estados');
+const { obtenerEstadoEditable, requiereRespuesta, esEstadoFinal } = require('./estados');
 const { clasificarTipoTramite } = require('./comunicaciones');
 const {
     router: authRouter, autenticar, permitirRoles, filtroDependencia, autorizarRadicado
@@ -230,13 +230,13 @@ const protegerAdministracion = permitirRoles('administrador');
 async function obtenerTerminoVigente({ tipoTramiteId, tipoDocumento, fecha }) {
     const esIdNumerico = tipoTramiteId && Number.isInteger(Number(tipoTramiteId)) && Number(tipoTramiteId) >= 1;
     const [tipos] = await pool.query(
-        `SELECT t.id, t.codigo, t.nombre, t.categoria_general, l.id AS termino_legal_id,
+        `SELECT t.id, t.codigo, t.nombre, t.categoria_general, t.requiere_respuesta, l.id AS termino_legal_id,
                 l.dias, l.tipo_dias, l.fundamento_legal
          FROM tipos_tramite AS t
-         JOIN terminos_legales AS l ON l.tipo_tramite_id = t.id
-         WHERE t.activo = TRUE
+         LEFT JOIN terminos_legales AS l ON l.tipo_tramite_id = t.id
            AND l.vigente_desde <= ?
            AND (l.vigente_hasta IS NULL OR l.vigente_hasta >= ?)
+         WHERE t.activo = TRUE
            AND (? IS NULL OR t.id = ? OR t.codigo = ? OR t.nombre = ?)
          ORDER BY l.vigente_desde DESC, l.id DESC`,
         [
@@ -279,11 +279,14 @@ function presentarRadicado(radicado) {
         termino_codigo_tramite,
         seguimiento_estado,
         seguimiento_fecha_respuesta,
+        seguimiento_fecha_enterado,
         ...datos
     } = radicado;
     const radicadoConTermino = {
         ...datos,
         estado: seguimiento_estado || datos.estado,
+        fecha_enterado: datos.destino_todas_dependencias
+            ? seguimiento_fecha_enterado : datos.fecha_enterado,
         fecha_recepcion: termino_fecha_recepcion || datos.fecha_creacion,
         termino_dias_aplicado: termino_dias,
         tipo_dias_aplicado: termino_tipo_dias,
@@ -348,6 +351,10 @@ app.post('/api/radicados', permitirRoles('administrador', 'ventanilla'), recibir
         if (!['Interna', 'Externa'].includes(tipo_comunicacion)) {
             archivos.forEach(eliminarArchivoSubido);
             return responderError(res, 400, 'La clase de comunicación debe ser Interna o Externa.');
+        }
+        if (req.body.requiere_respuesta !== undefined) {
+            archivos.forEach(eliminarArchivoSubido);
+            return responderError(res, 400, 'La regla de respuesta se determina desde el catálogo.');
         }
 
         // Validación obligatoria para evitar errores de base de datos
@@ -479,7 +486,7 @@ app.post('/api/radicados', permitirRoles('administrador', 'ventanilla'), recibir
             tipoDocumento: tipo_documento,
             fecha: fechaRecepcion
         });
-        if (!termino) {
+        if (!termino || (requiereRespuesta(termino) && !termino.termino_legal_id)) {
             archivos.forEach(eliminarArchivoSubido);
             return responderError(
                 res,
@@ -488,14 +495,15 @@ app.post('/api/radicados', permitirRoles('administrador', 'ventanilla'), recibir
             );
         }
         const tipoComunicacion = tipo_comunicacion;
-        const fechaLimite = agregarDias(fechaRecepcion, termino.dias, termino.tipo_dias);
-        const tiempoRespuesta = obtenerTiempoRespuesta(termino);
+        const exigeRespuesta = requiereRespuesta(termino);
+        const fechaLimite = exigeRespuesta ? agregarDias(fechaRecepcion, termino.dias, termino.tipo_dias) : null;
+        const tiempoRespuesta = exigeRespuesta ? obtenerTiempoRespuesta(termino) : 'No requiere respuesta';
         const query = `
             INSERT INTO radicados 
-            (numero_radicado, tipo_recepcion, tipo_comunicacion, tipo_documento, tiempo_de_respuesta, remitente_nombre, remitente_documento, remitente_entidad, remitente_nit, remitente_telefono, remitente_email, numero_folios, fecha_hora_recepcion, dependencia_destino, asunto_documento, usuario_recibe, dependencia_destino_id, destino_todas_dependencias, dependencia_remitente_id, dependencia_remitente, remitente_tipo_persona)
+            (numero_radicado, tipo_recepcion, tipo_comunicacion, tipo_documento, tiempo_de_respuesta, remitente_nombre, remitente_documento, remitente_entidad, remitente_nit, remitente_telefono, remitente_email, numero_folios, fecha_hora_recepcion, dependencia_destino, asunto_documento, usuario_recibe, dependencia_destino_id, destino_todas_dependencias, dependencia_remitente_id, dependencia_remitente, remitente_tipo_persona, requiere_respuesta)
             VALUES (?, ?, ?, ?, ?,
                     ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                    ?, ?, ?, ?, ?, ?, ?)
+                    ?, ?, ?, ?, ?, ?, ?, ?)
         `;
 
         const connection = await pool.getConnection();
@@ -552,7 +560,8 @@ app.post('/api/radicados', permitirRoles('administrador', 'ventanilla'), recibir
                 destinoTodasDependencias ? 1 : 0,
                 dependenciaRemitente?.id ?? null,
                 dependenciaRemitente?.nombre ?? null,
-                tipoComunicacion === 'Externa' ? remitente_tipo_persona : null
+                tipoComunicacion === 'Externa' ? remitente_tipo_persona : null,
+                exigeRespuesta ? 1 : 0
             ];
             await connection.execute(query, values);
             if (destinoTodasDependencias) {
@@ -586,11 +595,11 @@ app.post('/api/radicados', permitirRoles('administrador', 'ventanilla'), recibir
                 [
                     numeroRadicado,
                     termino.id,
-                    termino.termino_legal_id,
+                    exigeRespuesta ? termino.termino_legal_id : null,
                     fechaRecepcion,
-                    termino.dias,
-                    termino.tipo_dias,
-                    termino.fundamento_legal,
+                    exigeRespuesta ? termino.dias : null,
+                    exigeRespuesta ? termino.tipo_dias : null,
+                    exigeRespuesta ? termino.fundamento_legal : null,
                     fechaLimite,
                     fechaLimite
                 ]
@@ -598,13 +607,14 @@ app.post('/api/radicados', permitirRoles('administrador', 'ventanilla'), recibir
             await connection.execute(
                 `INSERT INTO historial_radicado
                     (numero_radicado, campo_modificado, valor_nuevo, usuario, motivo)
-                 VALUES (?, 'termino_legal', ?, ?, 'Término aplicado al crear el radicado')`,
+                 VALUES (?, 'regla_respuesta', ?, ?, 'Regla de respuesta aplicada al crear el radicado')`,
                 [numeroRadicado, JSON.stringify({
                     tipo_tramite_id: termino.id,
-                    termino_legal_id: termino.termino_legal_id,
-                    dias: termino.dias,
-                    tipo_dias: termino.tipo_dias,
-                    fundamento_legal: termino.fundamento_legal,
+                    requiere_respuesta: exigeRespuesta,
+                    termino_legal_id: exigeRespuesta ? termino.termino_legal_id : null,
+                    dias: exigeRespuesta ? termino.dias : null,
+                    tipo_dias: exigeRespuesta ? termino.tipo_dias : null,
+                    fundamento_legal: exigeRespuesta ? termino.fundamento_legal : null,
                     fecha_limite: fechaLimite
                 }), String(req.usuario.id)]
             );
@@ -630,12 +640,13 @@ app.post('/api/radicados', permitirRoles('administrador', 'ventanilla'), recibir
             dependencia_remitente: dependenciaRemitente?.nombre ?? null,
             remitente_tipo_persona: tipoComunicacion === 'Externa' ? remitente_tipo_persona : null,
             destino_todas_dependencias: destinoTodasDependencias,
-            termino: {
+            requiere_respuesta: exigeRespuesta,
+            termino: exigeRespuesta ? {
                 dias: termino.dias,
                 tipo_dias: termino.tipo_dias,
                 fundamento_legal: termino.fundamento_legal,
                 fecha_limite: fechaLimite
-            },
+            } : null,
             tipo_comunicacion: tipoComunicacion
         });
 
@@ -659,7 +670,7 @@ app.get('/api/tipos-tramite', async (req, res) => {
     try {
         const hoy = obtenerFechaLocal(new Date(), 'fecha actual');
         const [rows] = await pool.query(
-            `SELECT t.id, t.codigo, t.nombre, t.categoria_general, t.orden, t.activo,
+            `SELECT t.id, t.codigo, t.nombre, t.categoria_general, t.orden, t.activo, t.requiere_respuesta,
                     l.id AS termino_legal_id, l.dias, l.tipo_dias, l.fundamento_legal
              FROM tipos_tramite AS t
              LEFT JOIN terminos_legales AS l
@@ -690,7 +701,7 @@ app.get('/api/tipos-tramite/:id', protegerAdministracion, async (req, res, next)
     }
     try {
         const [rows] = await pool.execute(
-            'SELECT id, codigo, nombre, categoria_general, orden, activo FROM tipos_tramite WHERE id = ?',
+            'SELECT id, codigo, nombre, categoria_general, orden, activo, requiere_respuesta FROM tipos_tramite WHERE id = ?',
             [id]
         );
         if (!rows.length) return responderError(res, 404, 'Tipo de tramite no encontrado.');
@@ -707,10 +718,12 @@ app.get('/api/tipos-tramite/:id', protegerAdministracion, async (req, res, next)
 app.put('/api/tipos-tramite/:id', protegerAdministracion, async (req, res, next) => {
     const id = Number(req.params.id);
     const { codigo, nombre, categoria_general, orden } = req.body || {};
+    const reglaRespuesta = req.body?.requiere_respuesta;
     if (!Number.isSafeInteger(id) || id < 1 ||
         typeof codigo !== 'string' || !/^[a-z0-9_]{2,60}$/.test(codigo) ||
         typeof nombre !== 'string' || !nombre.trim() || nombre.trim().length > 150 ||
         !CATEGORIAS_TRAMITE.has(categoria_general) ||
+        (reglaRespuesta !== undefined && typeof reglaRespuesta !== 'boolean') ||
         (orden !== undefined && (!Number.isInteger(orden) || orden < 0 || orden > 2147483647)) ||
         ['dias', 'tipo_dias', 'fundamento_legal', 'vigente_desde', 'vigente_hasta', 'activo']
             .some(campo => req.body?.[campo] !== undefined)) {
@@ -719,8 +732,9 @@ app.put('/api/tipos-tramite/:id', protegerAdministracion, async (req, res, next)
     try {
         const [result] = await pool.execute(
             `UPDATE tipos_tramite SET codigo = ?, nombre = ?, categoria_general = ?,
-                orden = COALESCE(?, orden) WHERE id = ?`,
-            [codigo, nombre.trim(), categoria_general, orden ?? null, id]
+                orden = COALESCE(?, orden), requiere_respuesta = COALESCE(?, requiere_respuesta) WHERE id = ?`,
+            [codigo, nombre.trim(), categoria_general, orden ?? null,
+                reglaRespuesta === undefined ? null : Number(reglaRespuesta), id]
         );
         if (!result.affectedRows) return responderError(res, 404, 'Tipo de tramite no encontrado.');
         return res.json({
@@ -780,16 +794,18 @@ app.post('/api/tipos-tramite', protegerAdministracion, async (req, res) => {
         fundamento_legal,
         vigente_desde
     } = req.body || {};
+    const reglaRespuesta = req.body?.requiere_respuesta === undefined ? true : req.body.requiere_respuesta;
     const diasNumero = Number(dias);
     const inicio = vigente_desde || obtenerFechaLocal(new Date(), 'vigente_desde');
     if (
         typeof codigo !== 'string' || !/^[a-z0-9_]{2,60}$/.test(codigo) ||
         typeof nombre !== 'string' || !nombre.trim() || nombre.trim().length > 150 ||
         !CATEGORIAS_TRAMITE.has(categoria_general) ||
-        !Number.isInteger(diasNumero) || diasNumero < 1 || diasNumero > 2147483647 ||
+        typeof reglaRespuesta !== 'boolean' ||
+        (reglaRespuesta && (!Number.isInteger(diasNumero) || diasNumero < 1 || diasNumero > 2147483647 ||
         !['habiles', 'calendario'].includes(tipo_dias) ||
         typeof fundamento_legal !== 'string' || !fundamento_legal.trim() || fundamento_legal.trim().length > 500 ||
-        !esFechaISO(inicio)
+        !esFechaISO(inicio)))
     ) {
         return responderError(
             res,
@@ -803,11 +819,11 @@ app.post('/api/tipos-tramite', protegerAdministracion, async (req, res) => {
         connection = await pool.getConnection();
         await connection.beginTransaction();
         const [result] = await connection.execute(
-            `INSERT INTO tipos_tramite (codigo, nombre, categoria_general)
-             VALUES (?, ?, ?)`,
-            [codigo, nombre.trim(), categoria_general]
+            `INSERT INTO tipos_tramite (codigo, nombre, categoria_general, requiere_respuesta)
+             VALUES (?, ?, ?, ?)`,
+            [codigo, nombre.trim(), categoria_general, Number(reglaRespuesta)]
         );
-        await connection.execute(
+        if (reglaRespuesta) await connection.execute(
             `INSERT INTO terminos_legales
                 (tipo_tramite_id, dias, tipo_dias, fundamento_legal, vigente_desde)
              VALUES (?, ?, ?, ?, ?)`,
@@ -817,7 +833,7 @@ app.post('/api/tipos-tramite', protegerAdministracion, async (req, res) => {
         return res.status(201).json({
             success: true,
             tipo_tramite_id: result.insertId,
-            message: 'Tipo de trámite y término inicial creados.'
+            message: reglaRespuesta ? 'Tipo de trámite y término inicial creados.' : 'Tipo de trámite sin respuesta creado.'
         });
     } catch (error) {
         if (connection) await connection.rollback();
@@ -940,6 +956,7 @@ app.get('/api/radicados', async (req, res) => {
                     d.nombre AS seguimiento_dependencia_nombre,
                     rd.estado AS seguimiento_estado,
                     rd.fecha_respuesta AS seguimiento_fecha_respuesta,
+                    rd.fecha_enterado AS seguimiento_fecha_enterado,
                     rt.fecha_recepcion AS termino_fecha_recepcion,
                     rt.termino_dias_aplicado AS termino_dias,
                     rt.tipo_dias_aplicado AS termino_tipo_dias,
@@ -997,6 +1014,7 @@ app.get('/api/alertas', async (req, res) => {
                     d.nombre AS seguimiento_dependencia_nombre,
                     rd.estado AS seguimiento_estado,
                     rd.fecha_respuesta AS seguimiento_fecha_respuesta,
+                    rd.fecha_enterado AS seguimiento_fecha_enterado,
                     rt.fecha_recepcion AS termino_fecha_recepcion,
                     rt.termino_dias_aplicado AS termino_dias,
                     rt.tipo_dias_aplicado AS termino_tipo_dias,
@@ -1203,7 +1221,7 @@ app.post(
             connection = await pool.getConnection();
             await connection.beginTransaction();
             const [radicados] = await connection.execute(
-                `SELECT r.estado, rt.fecha_limite_actual
+                `SELECT r.estado, rt.fecha_limite_actual, r.requiere_respuesta
                  FROM radicados AS r
                  JOIN radicado_terminos AS rt ON rt.numero_radicado = r.numero_radicado
                  WHERE r.numero_radicado = ? FOR UPDATE`,
@@ -1216,6 +1234,11 @@ app.post(
             }
 
             const radicado = radicados[0];
+            if (!requiereRespuesta(radicado)) {
+                reversionIntentada = true;
+                await connection.rollback();
+                return responderError(res, 409, 'Este radicado no requiere respuesta ni ampliación de plazo.');
+            }
             const fechaLimiteAnterior = obtenerFechaLocal(
                 radicado.fecha_limite_actual,
                 'fecha_limite_actual'
@@ -1329,13 +1352,17 @@ app.post(
             await connection.beginTransaction();
             const filtro = filtroDependencia(req.usuario, 'r');
             const [radicados] = await connection.execute(
-                `SELECT r.estado, r.destino_todas_dependencias FROM radicados r
+                `SELECT r.estado, r.destino_todas_dependencias, r.requiere_respuesta FROM radicados r
                  WHERE r.numero_radicado = ? AND ${filtro.sql} FOR UPDATE`,
                 [numeroRadicado, ...filtro.valores]
             );
             if (!radicados.length) {
                 await connection.rollback(); (req.files || []).forEach(eliminarArchivoSubido);
                 return responderError(res, 404, 'Radicado no encontrado o fuera de tu dependencia.');
+            }
+            if (!requiereRespuesta(radicados[0])) {
+                await connection.rollback(); (req.files || []).forEach(eliminarArchivoSubido);
+                return responderError(res, 409, 'Este radicado no requiere respuesta. Confirma su revisión como Enterado.');
             }
             let idAsignacion = null;
             let estadoActual = radicados[0].estado;
@@ -1373,7 +1400,7 @@ app.post(
                     estadoActual = objetivos[0].estado;
                 }
             }
-            if (String(estadoActual || '').toLowerCase() === 'respondido') {
+            if (esEstadoFinal(estadoActual)) {
                 await connection.rollback(); (req.files || []).forEach(eliminarArchivoSubido);
                 return responderError(res, 409, 'Este radicado ya fue respondido.');
             }
@@ -1457,7 +1484,7 @@ app.put(
             return responderError(
                 res,
                 400,
-                'Estado inválido. Los estados editables son: Recibido, En trámite, Pendiente y Respondido.'
+                'Estado inválido. Usa Recibido, En trámite, Pendiente o Enterado. Respondido requiere una respuesta institucional.'
             );
         }
 
@@ -1467,7 +1494,7 @@ app.put(
             await connection.beginTransaction();
             const filtro = filtroDependencia(req.usuario, 'radicados');
             const [actuales] = await connection.execute(
-                `SELECT estado, destino_todas_dependencias FROM radicados
+                `SELECT estado, destino_todas_dependencias, requiere_respuesta FROM radicados
                  WHERE numero_radicado = ? AND ${filtro.sql} FOR UPDATE`,
                 [numero_radicado, ...filtro.valores]
             );
@@ -1509,30 +1536,36 @@ app.put(
                     idAsignacion = asignaciones[0].id;
                     estadoAnterior = asignaciones[0].estado;
                 }
+            }
+            if (esEstadoFinal(estadoAnterior)) {
+                await connection.rollback();
+                return responderError(res, 409, 'El radicado ya tiene un estado final y no puede reabrirse.');
+            }
+            if (estadoNuevo === 'Enterado' && requiereRespuesta(actuales[0])) {
+                await connection.rollback();
+                return responderError(res, 409, 'Este radicado requiere una respuesta institucional, no puede cerrarse como Enterado.');
+            }
+            if (idAsignacion) {
                 await connection.execute(
                     `UPDATE radicado_dependencias SET estado = ?,
-                     fecha_respuesta = CASE WHEN LOWER(?) = 'respondido'
-                         THEN COALESCE(fecha_respuesta, CURRENT_TIMESTAMP) ELSE NULL END
+                     fecha_enterado = CASE WHEN ? = 'Enterado' THEN CURRENT_TIMESTAMP ELSE NULL END
                      WHERE id = ?`,
                     [estadoNuevo, estadoNuevo, idAsignacion]
                 );
             } else {
                 await connection.execute(
-                    `UPDATE radicados SET estado = ? WHERE numero_radicado = ?`,
-                    [estadoNuevo, numero_radicado]
-                );
-                await connection.execute(
-                    `UPDATE radicado_terminos SET fecha_respuesta = CASE
-                     WHEN LOWER(?) = 'respondido' THEN COALESCE(fecha_respuesta, CURRENT_TIMESTAMP)
-                     ELSE NULL END WHERE numero_radicado = ?`,
-                    [estadoNuevo, numero_radicado]
+                    `UPDATE radicados SET estado = ?,
+                     fecha_enterado = CASE WHEN ? = 'Enterado' THEN CURRENT_TIMESTAMP ELSE NULL END
+                     WHERE numero_radicado = ?`,
+                    [estadoNuevo, estadoNuevo, numero_radicado]
                 );
             }
             await connection.execute(
                 `INSERT INTO historial_radicado
                 (numero_radicado, campo_modificado, valor_anterior, valor_nuevo, usuario, motivo)
-             VALUES (?, 'estado', ?, ?, ?, 'Cambio de estado del radicado')`,
-                [numero_radicado, estadoAnterior || null, estadoNuevo, String(req.usuario.id)]
+             VALUES (?, 'estado', ?, ?, ?, ?)`,
+                [numero_radicado, estadoAnterior || null, estadoNuevo, String(req.usuario.id),
+                    `Cambio de estado${idAsignacion ? ` de asignación ${idAsignacion}` : ''}`]
             );
             const [rows] = await connection.execute(
                 `SELECT r.*,
@@ -1548,6 +1581,7 @@ app.put(
                     d.nombre AS seguimiento_dependencia_nombre,
                     rd.estado AS seguimiento_estado,
                     rd.fecha_respuesta AS seguimiento_fecha_respuesta,
+                    rd.fecha_enterado AS seguimiento_fecha_enterado,
                     t.nombre AS termino_nombre_tramite,
                     t.codigo AS termino_codigo_tramite
              FROM radicados AS r
@@ -1565,6 +1599,7 @@ app.put(
                 message: 'Estado actualizado correctamente',
                 estado: radicadoActualizado.estado,
                 fecha_respuesta: radicadoActualizado.fecha_respuesta || null,
+                fecha_enterado: radicadoActualizado.fecha_enterado || null,
                 tiempo_de_respuesta: radicadoActualizado.tiempo_de_respuesta || null,
                 fecha_limite_actual: radicadoActualizado.fecha_limite_actual || null,
                 semaforo: radicadoActualizado.semaforo

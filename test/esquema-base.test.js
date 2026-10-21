@@ -33,6 +33,11 @@ test('el esquema base y los ALTER de radicados cubren el contrato actual sin con
             assert.equal(columnas.has(columna), true, `${archivo}: referencia a ${columna} inexistente`);
         }
     }
+    const migracion020 = await fs.readFile(path.join(directorio, '020_informativos_sin_respuesta.js'), 'utf8');
+    assert.match(migracion020, /ADD COLUMN requiere_respuesta TINYINT NOT NULL DEFAULT 1/);
+    assert.match(migracion020, /ADD COLUMN fecha_enterado DATETIME NULL/);
+    columnas.add('requiere_respuesta');
+    columnas.add('fecha_enterado');
     const server = await fs.readFile(path.join(__dirname, '..', 'server.js'), 'utf8');
     const inserciones = [...server.matchAll(/INSERT INTO radicados\s*\(([^)]+)\)/g)];
     assert.ok(inserciones.length > 0);

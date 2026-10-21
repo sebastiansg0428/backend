@@ -4,6 +4,23 @@ const calcularSemaforoBackend = require('../semaforo');
 const { agregarDias, contarDias } = require('../semaforo');
 const { obtenerTiempoRespuesta } = require('../plazos');
 
+test('sin respuesta nunca vence ni usa el plazo textual; Enterado no fabrica fecha de respuesta', () => {
+    for (const regla of [0, false]) {
+        const registro = {
+            requiere_respuesta: regla, estado: 'Recibido', fecha_creacion: '2000-01-01',
+            tiempo_de_respuesta: '15 días hábiles', fecha_limite_actual: '2000-02-01'
+        };
+        const pendiente = calcularSemaforoBackend(registro);
+        assert.equal(pendiente.nivel, 'sin_respuesta');
+        assert.equal(pendiente.texto, 'No requiere respuesta');
+        assert.equal(pendiente.dias_restantes, null);
+        assert.equal(pendiente.fecha_limite, null);
+        const final = calcularSemaforoBackend({ ...registro, estado: 'Enterado' });
+        assert.equal(final.nivel, 'completado');
+        assert.equal(final.texto, 'Enterado');
+        assert.equal(final.fecha_limite, null);
+    }
+});
 test('calcula vencimientos hábiles excluyendo fines de semana y festivos colombianos', () => {
     assert.equal(agregarDias('2026-10-07', 15, 'habiles'), '2026-10-29');
     assert.equal(contarDias('2026-10-07', '2026-10-29', 'habiles'), 15);

@@ -50,6 +50,7 @@ este orden, deteniendote si un paso falla:
 | 017 | [017_destino_todas_dependencias.sql](migrations/017_destino_todas_dependencias.sql) |
 | 018 | [018_seguimiento_por_dependencia.sql](migrations/018_seguimiento_por_dependencia.sql) |
 | 019 | [019_procedencia_radicados.sql](migrations/019_procedencia_radicados.sql) |
+| 020 | `node migrations\020_informativos_sin_respuesta.js` |
 
 Las migraciones SQL no son todas idempotentes y los cambios DDL pueden quedar
 confirmados aunque un paso posterior falle: no vuelvas a importar toda la
@@ -78,6 +79,12 @@ de respaldar estructura. Una conexión nueva confirmó columnas NULLables,
 índice/FK y conservación de los cinco registros previos mediante comparación
 de sus campos originales. No se crearon radicados reales de prueba.
 Esta comprobación no sustituye una prueba de radicación de extremo a extremo.
+
+La migracion 020 tambien se aplico a la base local despues de respaldar su
+estructura y verificarla antes de ejecutar. Una conexion nueva confirmo la
+regla, nulabilidad, restricciones y Enterado en el ENUM; las cuatro tablas
+conservaron conteos y hashes de todos sus campos originales. No se insertaron
+radicados de prueba en esa base.
 
 Cuando se autorice esa validacion, importa la secuencia completa en una base
 de prueba vacia, comprueba las FKs y columnas con `SHOW CREATE TABLE`, las 24
@@ -189,7 +196,7 @@ ademas del flujo exitoso y los rechazos de negocio.
 
 Haz la validacion en una base separada, por ejemplo `ventanilla_unica_test`, y
 usa exclusivamente datos ficticios. Para prepararla desde cero, sigue la
-secuencia 000-019 de la seccion de instalacion nueva. Tambien puedes importar
+secuencia 000-020 de la seccion de instalacion nueva. Tambien puedes importar
 solo la estructura de una base compatible (sin filas), pero esa alternativa
 no demuestra que la secuencia de instalacion limpia sea ejecutable.
 
@@ -722,25 +729,53 @@ disposiciones finales; esos valores definen el calendario y el destino documenta
 `PUT /api/radicados/:numero_radicado/estado` recibe JSON:
 
 ```json
-{ "estado": "Respondido" }
+{ "estado": "En trámite" }
 ```
 
-Los estados editables coinciden con el formulario y la base de datos:
-`Recibido`, `En trámite`, `Pendiente` y `Respondido`. El backend normaliza
+Los estados editables son `Recibido`, `En trámite` y `Pendiente`; `Enterado`
+solo se permite cuando el radicado no requiere respuesta. El backend normaliza
 mayusculas, espacios y acentos antes de guardar. `Vencido` es una condicion
 calculada por el semaforo, no un estado editable desde esta ruta.
 
-La respuesta incluye `success`, `estado`, `fecha_respuesta`,
+La respuesta incluye `success`, `estado`, `fecha_respuesta`, `fecha_enterado`,
 `tiempo_de_respuesta`, `fecha_limite_actual` y `semaforo`. Un estado no valido
 devuelve HTTP 400 con `success: false` y `message`; un radicado inexistente
 devuelve HTTP 404.
 
-El cambio de estado, la fecha de respuesta del modulo de terminos y el historial
-se guardan dentro de una transaccion. Marcar como `Respondido` conserva la fecha
-de respuesta si ya existia; volver a un estado pendiente la elimina y reactiva
-el semaforo sin cambiar el termino ni la fecha limite. Esto permite corregir una
-marcacion accidental; el historial conserva los cambios.
+El cambio de estado, la fecha de enterado y el historial se guardan dentro de una
+transaccion. `Respondido` solo se establece al guardar la respuesta institucional;
+enviarlo a esta ruta devuelve HTTP 400. `Respondido` y `Enterado` son finales:
+intentar reabrirlos devuelve HTTP 409. No se inventa una respuesta ni una
+`fecha_respuesta` al registrar Enterado. En globales, el estado y la fecha de
+enterado pertenecen exclusivamente a la asignacion seleccionada.
 
 El frontend debe actualizar su modelo con el `estado` devuelto por la API y
 restaurar el selector al estado anterior si la solicitud falla. Debe mostrar
 `message`, no solo un error generico.
+
+### Informativos sin respuesta (020)
+
+Antes de desplegar, respalda la base y ejecuta una sola vez
+`node migrations\020_informativos_sin_respuesta.js` despues de 019. Consulta las
+[precauciones de migracion](migrations/LEEME.md). El DDL no tiene rollback
+transaccional. Despliega frontend y backend juntos y reinicia el servidor.
+
+El administrador configura `requiere_respuesta` como booleano en POST/PUT de
+tipos de tramite. Omitirlo en POST conserva el comportamiento anterior (true);
+omitirlo en PUT conserva la regla existente. Crear un tipo false no exige ni
+crea un termino legal ficticio. Al habilitar respuesta sobre un tipo sin termino,
+debe registrarse una version legal vigente antes de poder radicarlo.
+
+La migracion configura solo el codigo exacto `informativo` como false en el
+catalogo. Todos los radicados historicos conservan regla true, estados y plazos.
+Cada nuevo radicado guarda una copia de la regla del catalogo: cambiar el catalogo
+despues no altera documentos ya registrados. El cliente no puede imponer la
+regla en POST de radicados. Interna/Externa, asunto y nombre no deciden la regla.
+
+Un radicado sin respuesta conserva su tipo y fecha de recepcion en
+`radicado_terminos`, pero termino, dias, fundamento y vencimientos quedan NULL.
+No genera alertas por vencimiento ni permite respuesta institucional o ampliacion
+(HTTP 409). La dependencia confirma su revision como Enterado; se auditan actor,
+fecha y asignacion cuando corresponde. El PDF indica «No requiere respuesta».
+Esta configuracion operativa no es una exencion legal: si el documento solicita
+gestion o respuesta, debe clasificarse en el tramite y plazo juridico adecuados.

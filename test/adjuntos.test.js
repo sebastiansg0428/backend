@@ -68,7 +68,9 @@ test('valida la estructura PDF en radicacion y respuestas sin alterar el almacen
             async execute(sql, valores) {
                 if (sql.includes('SELECT ultimo_numero')) return [[{ ultimo_numero: 0 }]];
                 if (sql.includes('SELECT 1 FROM radicados')) return [[]];
-                if (sql.includes('SELECT r.estado')) return [[{ estado: 'Recibido' }]];
+                if (sql.includes('SELECT r.estado')) return [[{
+                    estado: 'Recibido', requiere_respuesta: termino.requiere_respuesta
+                }]];
                 if (sql.includes('SELECT id FROM respuestas_radicado')) return [[]];
                 escrituras.push({ sql, valores });
                 return [{ insertId: 7, affectedRows: 1 }];
@@ -223,9 +225,10 @@ test('valida la estructura PDF en radicacion y respuestas sin alterar el almacen
             assert.ok(escrituras.slice(escriturasAntes).some(({ sql }) => sql.includes(`INSERT INTO ${tabla}`)));
             const insertRadicado = escrituras.slice(escriturasAntes).find(({ sql }) => sql.includes('INSERT INTO radicados'));
             assert.equal(insertRadicado.valores[2], tipoComunicacion);
-            assert.equal(insertRadicado.valores.length, 21);
-            assert.equal((insertRadicado.sql.match(/\?/g) || []).length, 21);
-            assert.deepEqual(insertRadicado.valores.slice(18), tipoComunicacion === 'Interna'
+            assert.equal(insertRadicado.valores.length, 22);
+            assert.equal((insertRadicado.sql.match(/\?/g) || []).length, 22);
+            assert.equal(insertRadicado.valores[21], 1);
+            assert.deepEqual(insertRadicado.valores.slice(18, 21), tipoComunicacion === 'Interna'
                 ? [2, 'Planeacion', null] : [null, null, 'natural']);
             assert.equal(resultado.dependencia_remitente, tipoComunicacion === 'Interna' ? 'Planeacion' : null);
         });
@@ -285,7 +288,7 @@ test('valida la estructura PDF en radicacion y respuestas sin alterar el almacen
         assert.equal(registro.valores[7], 'Empresa');
         assert.equal(registro.valores[8], '123456789012');
         assert.equal(registro.valores[10], 'remitente@example.com');
-        assert.deepEqual(registro.valores.slice(18), [null, null, 'juridica']);
+        assert.deepEqual(registro.valores.slice(18, 21), [null, null, 'juridica']);
     });
     await t.test('radicacion global se guarda sin ID de dependencia y con marca compartida', async () => {
         const escriturasAntes = escrituras.length;
@@ -303,5 +306,36 @@ test('valida la estructura PDF en radicacion y respuestas sin alterar el almacen
         const respuesta = await subir('/api/radicados', [pdfClasico], 'archivo');
         assert.equal(respuesta.status, 200);
         assert.equal((await respuesta.json()).success, true);
+    });
+    await t.test('informativo sin término guarda regla y fechas nulas; rechaza respuesta y regla manipulada', async () => {
+        const previo = { ...termino };
+        Object.assign(termino, { requiere_respuesta: 0, termino_legal_id: null, dias: null,
+            tipo_dias: null, fundamento_legal: null });
+        try {
+            const respuesta = await subir('/api/radicados', [pdfClasico]);
+            assert.equal(respuesta.status, 200);
+            const datos = await respuesta.json();
+            assert.equal(datos.requiere_respuesta, false);
+            assert.equal(datos.termino, null);
+            const registro = escrituras.filter(({ sql }) => sql.includes('INSERT INTO radicados')).at(-1);
+            assert.equal(registro.valores[21], 0);
+            assert.equal(registro.valores[4], 'No requiere respuesta');
+            const snapshot = escrituras.filter(({ sql }) => sql.includes('INSERT INTO radicado_terminos')).at(-1);
+            assert.deepEqual(snapshot.valores.slice(2), [null, snapshot.valores[3], null, null, null, null, null]);
+            const anteriores = new Set(archivosPropios);
+            const antes = commits;
+            const rechazada = await subir('/api/radicados/RAD-PRUEBA/respuesta', [pdfClasico]);
+            assert.equal(rechazada.status, 409);
+            assert.equal(commits, antes);
+            for (const archivo of [...archivosPropios].filter(a => !anteriores.has(a))) {
+                await assert.rejects(fs.access(archivo), { code: 'ENOENT' });
+            }
+            const manipulada = await subir('/api/radicados', [pdfClasico], 'archivos', 'Externa', '2',
+                { requiere_respuesta: '1' });
+            assert.equal(manipulada.status, 400);
+        } finally {
+            Object.assign(termino, previo);
+            delete termino.requiere_respuesta;
+        }
     });
 });

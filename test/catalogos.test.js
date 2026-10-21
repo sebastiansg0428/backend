@@ -78,10 +78,10 @@ test('administrador gestiona catalogos con baja logica y conserva permisos, refe
                 (!sql.includes('activo = TRUE') || tipo.activo === 1))];
         }
         if (sql.startsWith('INSERT INTO tipos_tramite')) {
-            const [codigo, nombre, categoria_general] = valores;
+            const [codigo, nombre, categoria_general, requiere_respuesta] = valores;
             if (tipos.some(tipo => tipo.codigo === codigo || tipo.nombre === nombre)) duplicado();
             const id = Math.max(...tipos.map(tipo => tipo.id)) + 1;
-            tipos.push({ id, codigo, nombre, categoria_general, orden: 0, activo: 1 });
+            tipos.push({ id, codigo, nombre, categoria_general, requiere_respuesta, orden: 0, activo: 1 });
             return [{ insertId: id }];
         }
         if (sql.startsWith('UPDATE tipos_tramite')) {
@@ -91,9 +91,10 @@ test('administrador gestiona catalogos con baja logica y conserva permisos, refe
                 assert.equal(sql, 'UPDATE tipos_tramite SET activo = ? WHERE id = ?');
                 tipo.activo = valores[0];
             } else {
-                const [codigo, nombre, categoria_general, orden] = valores;
+                const [codigo, nombre, categoria_general, orden, regla] = valores;
                 if (tipos.some(otro => otro.id !== tipo.id && (otro.codigo === codigo || otro.nombre === nombre))) duplicado();
-                Object.assign(tipo, { codigo, nombre, categoria_general, orden: orden ?? tipo.orden });
+                Object.assign(tipo, { codigo, nombre, categoria_general, orden: orden ?? tipo.orden,
+                    requiere_respuesta: regla ?? tipo.requiere_respuesta });
             }
             return [{ affectedRows: 1 }];
         }
@@ -304,6 +305,28 @@ test('administrador gestiona catalogos con baja logica y conserva permisos, refe
         ...editarTipo, codigo: datosTipo.codigo
     })).status, 409);
     assert.equal((await pedir('/tipos-tramite/1/estado', 0, 'PATCH', { activo: 1 })).status, 200);
+    for (const requiere_respuesta of ['false', 0, null, [], {}]) {
+        assert.equal((await pedir('/tipos-tramite', 0, 'POST', {
+            ...datosTipo, codigo: 'informacion', nombre: 'Información', requiere_respuesta
+        })).status, 400);
+    }
+    const terminosSinCambio = structuredClone(terminos);
+    const creadoSinPlazo = await pedir('/tipos-tramite', 0, 'POST', {
+        codigo: 'solo_conocimiento', nombre: 'Solo conocimiento',
+        categoria_general: 'peticion_general', requiere_respuesta: false
+    });
+    assert.equal(creadoSinPlazo.status, 201);
+    const idSinPlazo = (await creadoSinPlazo.json()).tipo_tramite_id;
+    assert.equal(tipos.find(t => t.id === idSinPlazo).requiere_respuesta, 0);
+    assert.deepEqual(terminos, terminosSinCambio);
+    const camposSinPlazo = { codigo: 'solo_conocimiento', nombre: 'Solo conocimiento', categoria_general: 'peticion_general' };
+    assert.equal((await pedir(`/tipos-tramite/${idSinPlazo}`, 0, 'PUT', camposSinPlazo)).status, 200);
+    assert.equal(tipos.find(t => t.id === idSinPlazo).requiere_respuesta, 0);
+    assert.equal((await pedir(`/tipos-tramite/${idSinPlazo}`, 0, 'PUT', {
+        ...camposSinPlazo, requiere_respuesta: true
+    })).status, 200);
+    assert.equal(tipos.find(t => t.id === idSinPlazo).requiere_respuesta, 1);
+    assert.deepEqual(terminos, terminosSinCambio);
     const tiposAntes = structuredClone(tipos);
     const terminosAntes = structuredClone(terminos);
     falloTermino = true;

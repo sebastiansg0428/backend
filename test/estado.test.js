@@ -12,16 +12,16 @@ test('normaliza los estados usados por el frontend y el ENUM de MySQL', () => {
         [' pendiente ', 'Pendiente'],
         ['EN TRAMITE', 'En trámite'],
         ['En trámite', 'En trámite'],
-        ['RESPONDIDO', 'Respondido']
+        ['ENTERADO', 'Enterado']
     ]) {
         assert.equal(obtenerEstadoEditable(entrada), esperado);
     }
-    for (const entrada of ['Radicado', 'Cerrado', 'Entregado', 'Vencido', '', null, 3]) {
+    for (const entrada of ['Respondido', 'Radicado', 'Cerrado', 'Entregado', 'Vencido', '', null, 3]) {
         assert.equal(obtenerEstadoEditable(entrada), null);
     }
 });
 
-test('PUT estado admite los cuatro estados y actualiza el semáforo sin cambiar términos', async t => {
+test('PUT estado admite estados intermedios sin fabricar respuestas', async t => {
     const usuario = {
         id: 1, nombre: 'Admin de prueba', rol: 'administrador', dependencia_id: null, activo: 1
     };
@@ -48,7 +48,7 @@ test('PUT estado admite los cuatro estados y actualiza el semáforo sin cambiar 
         async rollback() { rollbacks++; },
         release() {},
         async execute(sql, values) {
-            if (sql.includes('SELECT estado, destino_todas_dependencias FROM radicados')) {
+            if (sql.includes('SELECT estado, destino_todas_dependencias, requiere_respuesta FROM radicados')) {
                 if (values.length > 1) {
                     assert.match(sql, /radicados\.dependencia_destino_id = \?/);
                     assert.match(sql, /EXISTS \(/);
@@ -91,7 +91,7 @@ test('PUT estado admite los cuatro estados y actualiza el semáforo sin cambiar 
         server.close(error => error ? reject(error) : resolve());
     }));
     const url = `http://127.0.0.1:${server.address().port}/api/radicados/RAD-PRUEBA/estado`;
-    for (const nuevoEstado of ['Respondido', 'Recibido', 'En tramite', 'Pendiente']) {
+    for (const nuevoEstado of ['Recibido', 'En tramite', 'Pendiente']) {
         const response = await fetch(url, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
@@ -117,20 +117,25 @@ test('PUT estado admite los cuatro estados y actualiza el semáforo sin cambiar 
     });
     assert.equal(response.status, 400);
     assert.match((await response.json()).message, /Recibido.*Pendiente.*Respondido/);
-    assert.equal(commits, 4);
+    assert.equal(commits, 3);
     assert.equal(rollbacks, 0);
-    assert.equal(historial.length, 4);
+    assert.equal(historial.length, 3);
     assert.equal(historial[0][1], 'Recibido');
-    assert.equal(historial[0][2], 'Respondido');
+    assert.equal(historial[0][2], 'Recibido');
     const propia = await fetch(url, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tokenFuncionario}` },
-        body: JSON.stringify({ estado: 'Respondido' })
+        body: JSON.stringify({ estado: 'En trámite' })
     });
     assert.equal(propia.status, 200);
-    assert.equal((await propia.json()).semaforo.nivel, 'completado');
-    assert.equal(commits, 5);
-    assert.equal(historial[4][3], String(funcionario.id));
+    assert.notEqual((await propia.json()).semaforo.nivel, 'completado');
+    assert.equal(commits, 4);
+    assert.equal(historial[3][3], String(funcionario.id));
+    const manual = await fetch(url, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ estado: 'Respondido' })
+    });
+    assert.equal(manual.status, 400);
 });
 
 test('PUT de un radicado global solo actualiza la asignación de la dependencia del funcionario', async t => {
@@ -149,7 +154,7 @@ test('PUT de un radicado global solo actualiza la asignación de la dependencia 
     const connection = {
         async beginTransaction() {}, async commit() {}, async rollback() {}, release() {},
         async execute(sql, values) {
-            if (sql.includes('SELECT estado, destino_todas_dependencias FROM radicados')) {
+            if (sql.includes('SELECT estado, destino_todas_dependencias, requiere_respuesta FROM radicados')) {
                 assert.deepEqual(values, ['RAD-GLOBAL', 7, 7]);
                 return [[{ estado: 'Respondido', destino_todas_dependencias: 1 }]];
             }

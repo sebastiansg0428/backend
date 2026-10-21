@@ -16,7 +16,7 @@ test('ampliaciones preservan respuestas y limpian conexiones ante fallos', async
     const escenarios = [
         'exito', 'permiso', 'invalido', 'conexion', 'inicio', 'consulta',
         'ampliacion', 'actualizacion', 'historial', 'commit', 'rollback',
-        'inexistente', 'respondido', 'vencido', 'fecha',
+        'inexistente', 'respondido', 'vencido', 'fecha', 'informativo',
         'inexistente-rollback', 'respondido-rollback', 'vencido-rollback', 'fecha-rollback'
     ];
     for (const escenario of escenarios) {
@@ -47,7 +47,10 @@ test('ampliaciones preservan respuestas y limpian conexiones ante fallos', async
                             eventos.push('consulta');
                             assert.deepEqual(valores, ['RAD-PRUEBA']);
                             if (escenario === 'consulta') throw errorOriginal;
-                            return [negocio === 'inexistente' ? [] : [{ estado, fecha_limite_actual: fecha }]];
+                            return [negocio === 'inexistente' ? [] : [{
+                                estado, requiere_respuesta: negocio === 'informativo' ? 0 : 1,
+                                fecha_limite_actual: negocio === 'informativo' ? null : fecha
+                            }]];
                         }
                         const paso = /INSERT INTO ampliaciones_termino/.test(sql) ? 'ampliacion'
                             : /UPDATE radicado_terminos/.test(sql) ? 'actualizacion'
@@ -82,7 +85,7 @@ test('ampliaciones preservan respuestas y limpian conexiones ante fallos', async
             const status = escenario === 'exito' ? 200 : escenario === 'permiso' ? 403
                 : escenario === 'invalido' || escenario === 'fecha' ? 400
                     : escenario === 'inexistente' ? 404
-                        : ['respondido', 'vencido'].includes(escenario) ? 409 : 500;
+                        : ['respondido', 'vencido', 'informativo'].includes(escenario) ? 409 : 500;
             assert.equal(respuesta.status, status);
             assert.equal(resultado.success, status === 200);
             if (status === 500) {

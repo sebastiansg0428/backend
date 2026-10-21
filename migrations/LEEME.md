@@ -25,8 +25,31 @@ con una conexión nueva y despliega frontend/backend juntos; reinicia el backend
 Las nuevas internas exigen origen activo y las externas tipo de persona/correo;
 las jurídicas exigen además razón social/NIT. No cambia el acceso por destino.
 
-La secuencia completa para instalaciones nuevas es 000-019, incluyendo los
-pasos JavaScript 002 y 009 en su posición; consulta el
+La secuencia completa para instalaciones nuevas es 000-020, incluyendo los
+pasos JavaScript 002, 009 y 020 en su posición; consulta el
 [README principal](../README.md). No reapliques esa secuencia a una base existente.
 La validación estática de migraciones no equivale a ejecutar toda la instalación
 en una base aislada.
+
+## Informativos sin respuesta (020)
+
+Despues de 019, respalda la base y conserva `SHOW CREATE TABLE` de `radicados`,
+`tipos_tramite`, `radicado_terminos` y `radicado_dependencias`. Deten las escrituras
+durante el despliegue. Ejecuta una sola vez:
+
+```powershell
+node migrations\020_informativos_sin_respuesta.js
+```
+
+Agrega la regla por catalogo y su copia por radicado (historicos = true),
+`fecha_enterado` individual y por asignacion, y permite terminos/fechas NULL
+para nuevos documentos sin respuesta. Amplia el ENUM de estado local con Enterado
+sin quitar valores anteriores; si estado es VARCHAR lo conserva. Inicializa
+solo el codigo exacto `informativo` del catalogo con regla false, sin cambiar
+estados, respuestas ni vencimientos historicos.
+
+El DDL implica commit. Ante error o estado parcial, no reejecutes a ciegas:
+verifica el esquema con una conexion nueva y resuelve el paso incompleto.
+Comprueba columnas, restricciones, nulabilidad y conservacion de registros.
+La migracion aborta si detecta las nuevas columnas ya existentes. Reinicia el
+backend y publica el frontend compatible antes de reabrir las escrituras.

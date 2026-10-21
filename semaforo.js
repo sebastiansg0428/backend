@@ -1,4 +1,5 @@
 const Holidays = require('date-holidays');
+const { requiereRespuesta } = require('./estados');
 
 const calendarioFestivos = new Holidays('CO');
 const festivosPorAno = new Map();
@@ -128,6 +129,12 @@ function crearResultado(nivel, texto, clase, punto, diasRestantes, fechaLimite) 
 }
 
 function calcularSemaforoBackend(radicado, fechaActual = new Date()) {
+    if (!requiereRespuesta(radicado)) {
+        const enterado = String(radicado.estado || '').toLowerCase() === 'enterado';
+        return crearResultado(enterado ? 'completado' : 'sin_respuesta',
+            enterado ? 'Enterado' : 'No requiere respuesta',
+            'bg-slate-100 text-slate-700 border-slate-300', 'bg-slate-500', null, null);
+    }
     if (
         String(radicado.estado || '').trim().toLowerCase() === 'respondido' ||
         radicado.fecha_respuesta

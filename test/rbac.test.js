@@ -113,6 +113,7 @@ test('RBAC HTTP aplica permisos en listas, alertas, archivos, historial y escrit
     t.mock.method(pool, 'query', async (sql, values = []) => {
         consultas.push({ sql, values });
         assert.match(sql, /FROM radicados AS r/);
+        assert.match(sql, /ORDER BY COALESCE\(r.fecha_hora_recepcion, r.fecha_creacion\) DESC/);
         const restringida = sql.includes('WHERE (r.dependencia_destino_id = ? OR EXISTS');
         const globalSeleccionada = values[0];
         const globals = asignacionesGlobales.filter(a => globalSeleccionada === null || a.dependencia_id === globalSeleccionada);

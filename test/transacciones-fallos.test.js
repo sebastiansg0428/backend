@@ -36,6 +36,7 @@ test('rutas activas preservan limpieza y conexiones ante fallos transaccionales'
     const pdf = await documento.save();
     const rutas = [
         { nombre: 'radicacion', ruta: '/api/radicados', archivo: true, exito: 200 },
+        { nombre: 'radicacion ventanilla', ruta: '/api/radicados', archivo: true, exito: 200, rol: 'ventanilla' },
         { nombre: 'respuesta', ruta: '/api/radicados/PRUEBA/respuesta', archivo: true, negocio: true, exito: 201 },
         { nombre: 'estado', ruta: '/api/radicados/PRUEBA/estado', metodo: 'PUT', negocio: true, exito: 200 },
         { nombre: 'tipo', ruta: '/api/tipos-tramite', exito: 201 },
@@ -47,7 +48,8 @@ test('rutas activas preservan limpieza y conexiones ante fallos transaccionales'
     const base = `http://127.0.0.1:${server.address().port}`;
     const leer = fs.readFile;
     for (const ruta of rutas) {
-        const escenarios = ['exito', 'conexion', 'inicio', 'sql', 'commit', 'rollback'];
+        usuario.rol = ruta.rol || 'administrador';
+        const escenarios = ruta.rol ? ['exito'] : ['exito', 'conexion', 'inicio', 'sql', 'commit', 'rollback'];
         if (ruta.negocio) escenarios.push('negocio', 'negocio-rollback');
         for (const escenario of escenarios) {
             await t.test(`${ruta.nombre}: ${escenario}`, async caso => {
@@ -85,9 +87,13 @@ test('rutas activas preservan limpieza y conexiones ante fallos transaccionales'
                             eventos.push('inicio');
                             if (escenario === 'inicio') throw errorOriginal;
                         },
-                        async execute(sql) {
+                        async execute(sql, valores) {
                             eventos.push('sql');
                             if (['sql', 'rollback'].includes(escenario)) throw errorOriginal;
+                            if (sql.includes('INSERT INTO radicados')) {
+                                assert.ok(valores.includes(usuario.nombre));
+                                assert.equal(valores.includes('Responsable manipulado'), false);
+                            }
                             if (escenario.startsWith('negocio')) return [[]];
                             if (sql.includes('SELECT ultimo_numero')) return [[{ ultimo_numero: 0 }]];
                             if (sql.includes('UNION ALL') || sql.includes('SELECT id FROM respuestas_radicado') ||
@@ -120,7 +126,8 @@ test('rutas activas preservan limpieza y conexiones ante fallos transaccionales'
                     vigente_desde: '2099-01-01', tipo_tramite_id: '1',
                     tipo_comunicacion: 'Externa', remitente_tipo_persona: 'natural',
                     remitente_email: 'prueba@example.test', remitente_nombre: 'Prueba',
-                    remitente_documento: '123', asunto_documento: 'Prueba', dependencia_destino_id: '2'
+                    remitente_documento: '123', asunto_documento: 'Prueba', dependencia_destino_id: '2',
+                    usuario_recibe: 'Responsable manipulado'
                 };
                 let body;
                 const headers = { Authorization: `Bearer ${token}` };
@@ -137,6 +144,8 @@ test('rutas activas preservan limpieza y conexiones ante fallos transaccionales'
                 const status = escenario === 'exito' ? ruta.exito : escenario === 'negocio' ? 404 : 500;
                 assert.equal(respuesta.status, status, JSON.stringify(resultado));
                 assert.equal(resultado.success, escenario === 'exito');
+                if (ruta.nombre.startsWith('radicacion') && escenario === 'exito')
+                    assert.equal(resultado.usuario_recibe, usuario.nombre);
                 if (escenario === 'conexion') assert.deepEqual(eventos, ['conexion']);
                 else if (escenario.endsWith('rollback')) {
                     assert.equal(eventos.filter(e => e === 'rollback').length, 1);

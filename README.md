@@ -654,6 +654,18 @@ de motor y plan de ejecucion sigue pendiente.
   El servidor guarda ID y nombre de la misma oficina y usa al usuario autenticado
   como receptor, ignorando un nombre de funcionario falsificado.
 
+El responsable autenticado aplica tambien a administradores. El frontend lo
+muestra en solo lectura; el endpoint del directorio de ventanilla se conserva
+por compatibilidad, pero no se necesita para radicar.
+
+`GET /api/radicados` y `GET /api/alertas` ordenan por
+`COALESCE(r.fecha_hora_recepcion, r.fecha_creacion) DESC`. La recepcion es la
+fecha canonica de radicacion, generada en `America/Bogota`; la creacion solo es
+respaldo historico si falta la recepcion. No se actualizan filas ni se modifican
+los snapshots de terminos legales o el calculo del semaforo. Los filtros y
+permisos permanecen iguales. Las pruebas verifican el contrato SQL con dobles;
+la validacion del orden y plan de ejecucion en un MySQL aislado sigue pendiente.
+
 La radicación acepta de 1 a 5 partes `archivos` (también conserva el campo
 singular `archivo` para la interfaz anterior), con un máximo de 10 MB por PDF.
 Tanto la radicacion como las respuestas institucionales validan el contenido

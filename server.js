@@ -1002,7 +1002,7 @@ app.get('/api/radicados', async (req, res) => {
              LEFT JOIN tipos_tramite AS t ON t.id = rt.tipo_tramite_id
              WHERE ${filtro.sql}
                ${filtroClase}
-             ORDER BY r.fecha_creacion DESC`,
+             ORDER BY COALESCE(r.fecha_hora_recepcion, r.fecha_creacion) DESC`,
             [dependenciaSeguimiento, dependenciaSeguimiento, ...filtro.valores]
         );
 
@@ -1063,7 +1063,7 @@ app.get('/api/alertas', async (req, res) => {
                     (r.destino_todas_dependencias = 0 AND r.dependencia_destino_id = ?))
                AND (? IS NULL OR (r.destino_todas_dependencias = 1 AND d.nombre = ?) OR
                     (r.destino_todas_dependencias = 0 AND r.dependencia_destino = ?))
-             ORDER BY r.fecha_creacion DESC`,
+             ORDER BY COALESCE(r.fecha_hora_recepcion, r.fecha_creacion) DESC`,
             [
                 dependenciaFiltroId, dependenciaFiltroId,
                 ...filtro.valores,

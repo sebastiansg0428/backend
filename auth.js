@@ -3,6 +3,7 @@ const { promisify } = require('util');
 const express = require('express');
 const bcrypt = require('bcrypt');
 const pool = require('./db');
+const { revertirTrasError } = require('./transacciones');
 const limitesLogin = require('./limites-login');
 
 const scrypt = promisify(crypto.scrypt);
@@ -267,15 +268,7 @@ router.post('/dependencias', autenticar, permitirRoles('administrador'), async (
         await connection.commit();
         res.status(201).json({ success: true, dependencia: { id: result.insertId, nombre, activo: 1 } });
     } catch (error) {
-        if (connection) {
-            try {
-                await connection.rollback();
-            } catch (rollbackError) {
-                connection.destroy();
-                connection = undefined;
-                return next(new AggregateError([error, rollbackError], 'Error al crear la dependencia y revertir la transaccion.'));
-            }
-        }
+        ({ connection, error } = await revertirTrasError(connection, error));
         next(error);
     } finally {
         if (connection) connection.release();
@@ -315,11 +308,13 @@ router.patch('/dependencias/:id/estado', autenticar, permitirRoles('administrado
         return errorHTTP(res, 400, 'Indica un ID valido y activo como 0 o 1.');
     }
     let connection;
+    let reversionIntentada = false;
     try {
         connection = await pool.getConnection();
         await connection.beginTransaction();
         const [result] = await connection.execute('UPDATE dependencias SET activo = ? WHERE id = ?', [activo, id]);
         if (!result.affectedRows) {
+            reversionIntentada = true;
             await connection.rollback();
             return errorHTTP(res, 404, 'Dependencia no encontrada.');
         }
@@ -336,15 +331,7 @@ router.patch('/dependencias/:id/estado', autenticar, permitirRoles('administrado
             message: activo === 1 ? 'Dependencia activada.' : 'Dependencia inactivada.'
         });
     } catch (error) {
-        if (connection) {
-            try {
-                await connection.rollback();
-            } catch (rollbackError) {
-                connection.destroy();
-                connection = undefined;
-                return next(new AggregateError([error, rollbackError], 'Error al cambiar el estado de la dependencia y revertir la transaccion.'));
-            }
-        }
+        ({ connection, error } = await revertirTrasError(connection, error, reversionIntentada));
         next(error);
     } finally {
         if (connection) connection.release();

@@ -147,7 +147,7 @@ test('RBAC HTTP aplica permisos en listas, alertas, archivos, historial y escrit
     t.mock.method(pool, 'execute', async (sql, values) => {
         if (sql.includes('FROM usuarios u')) return [[usuarios.get(values[0])].filter(Boolean)];
         if (sql.includes('SELECT r.id FROM radicados r')) {
-            const esArchivo = sql.includes('r.ruta_archivo');
+            const esArchivo = sql.includes('FROM documentos_radicado ddoc');
             if (esArchivo) assert.deepEqual(values.slice(0, 3), [values[0], values[0], values[0]]);
             const dependenciaId = values[esArchivo ? 3 : 1];
             const encontrados = registros.filter(r =>

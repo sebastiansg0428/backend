@@ -192,6 +192,26 @@ Prueba focalizada: `node --test test\ampliaciones.test.js`. Usa MySQL simulado y
 cubre adquisicion, inicio, consultas, escrituras, confirmacion y reversion,
 ademas del flujo exitoso y los rechazos de negocio.
 
+### Reversiones y errores de solicitudes
+
+Las transacciones de radicacion, respuestas, estados, catalogos, dependencias
+y limitador de login protegen tambien el fallo de `rollback`. Se conservan el
+error original y el de reversion en los logs, se destruye una conexion cuya
+reversion fallo y no se devuelve al pool ni se intenta revertirla otra vez.
+Los adjuntos de solicitudes fallidas se limpian aunque falle la reversion.
+No hay reintentos automaticos de escritura: perder la conexion al confirmar
+puede dejar un resultado incierto y no prueba que MySQL haya deshecho el registro.
+
+El JSON mal formado devuelve 400, un cuerpo que excede el limite del parser
+devuelve 413 y una codificacion no compatible devuelve 415. Los rechazos de
+archivos por formato, cantidad o tamano conservan 400 y sus limites actuales.
+Los fallos internos de almacenamiento devuelven 500 con un mensaje publico
+generico; rutas fisicas y detalles tecnicos solo se registran en el servidor.
+
+Las pruebas `test\transacciones-fallos.test.js` y `test\errores-http.test.js`
+usan conexiones simuladas y archivos ficticios. No prueban un commit ni una
+reversion real de MySQL.
+
 ## Validacion de integracion MySQL local
 
 Haz la validacion en una base separada, por ejemplo `ventanilla_unica_test`, y
@@ -615,6 +635,20 @@ su existencia; una accion de rol no permitido devuelve 403; sin sesion, 401.
   No existe una ruta independiente `GET /api/radicados/:numero_radicado`.
   `GET /api/radicados/:numero_radicado/documentos` lista los metadatos; el PDF
   se descarga desde `/uploads` con autenticación.
+
+La autorizacion de originales y respuestas se resuelve por separado. En un
+radicado global, un funcionario asignado puede descargar sus documentos
+originales aunque otra oficina ya haya respondido y la suya aun no. Los
+adjuntos de respuesta siguen restringidos a la asignacion de su dependencia;
+administrador y ventanilla conservan la consulta global autorizada. Se mantienen
+las rutas historicas de respuesta y las de documentos normalizados, GET/HEAD
+y el rechazo 404 de archivos inexistentes o ajenos.
+
+`test\documentos-acceso.test.js` cubre dos oficinas antes y despues de sus
+respuestas con SQL simulado y verificaciones del contrato de la consulta.
+Esta prueba no sustituye ejecutar la consulta en MySQL aislado; esa validacion
+de motor y plan de ejecucion sigue pendiente.
+
 - `POST /api/radicados`: envia `dependencia_destino_id` en FormData.
   Temporalmente se admite `dependencia_destino` por nombre exacto de catalogo.
   El servidor guarda ID y nombre de la misma oficina y usa al usuario autenticado

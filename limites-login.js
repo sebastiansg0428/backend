@@ -1,6 +1,7 @@
 const crypto = require('crypto');
 const { isIP } = require('net');
 const pool = require('./db');
+const { revertirTrasError } = require('./transacciones');
 
 const VENTANA_SEGUNDOS = 15 * 60;
 
@@ -24,6 +25,7 @@ function clavesLogin(email, ip) {
 async function reservarIntento(email, ip) {
     const claves = clavesLogin(email, ip);
     let connection;
+    let reversionIntentada = false;
     try {
         connection = await pool.getConnection();
         await connection.beginTransaction();
@@ -53,6 +55,7 @@ async function reservarIntento(email, ip) {
             }
         }
         if (reintentarEn > 0) {
+            reversionIntentada = true;
             await connection.rollback();
             return { permitido: false, reintentarEn };
         }
@@ -68,7 +71,7 @@ async function reservarIntento(email, ip) {
         await connection.commit();
         return { permitido: true, reintentarEn: 0 };
     } catch (error) {
-        if (connection) await connection.rollback();
+        ({ connection, error } = await revertirTrasError(connection, error, reversionIntentada));
         throw error;
     } finally {
         if (connection) connection.release();

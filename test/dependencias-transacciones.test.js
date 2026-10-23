@@ -18,7 +18,7 @@ test('creacion y cambios de estado de dependencias son atomicos', async t => {
         const escenarios = ['exito', 'conexion', 'inicio', 'commit', 'rollback'];
         if (operacion !== 'inactivar') escenarios.push('asignacion');
         if (operacion === 'crear') escenarios.push('duplicado');
-        else escenarios.push('inexistente');
+        else escenarios.push('inexistente', 'inexistente-rollback');
 
         for (const escenario of escenarios) {
             await t.test(`${operacion}: ${escenario}`, async caso => {
@@ -56,7 +56,7 @@ test('creacion y cambios de estado de dependencias son atomicos', async t => {
                             }
                             if (sql.startsWith('UPDATE dependencias')) {
                                 eventos.push('dependencia');
-                                if (escenario === 'inexistente') return [{ affectedRows: 0 }];
+                                if (escenario.startsWith('inexistente')) return [{ affectedRows: 0 }];
                                 assert.deepEqual(valores, [operacion === 'activar' ? 1 : 0, 2]);
                                 dependencias[0].activo = valores[0];
                                 return [{ affectedRows: 1 }];
@@ -78,7 +78,7 @@ test('creacion y cambios de estado de dependencias son atomicos', async t => {
                         },
                         async rollback() {
                             eventos.push('rollback');
-                            if (escenario === 'rollback') throw new Error('Fallo al revertir');
+                            if (escenario.endsWith('rollback')) throw new Error('Fallo al revertir');
                             if (copia) ({ dependencias, seguimientos } = copia);
                             abierta = false;
                         },
@@ -114,10 +114,11 @@ test('creacion y cambios de estado de dependencias son atomicos', async t => {
                 } else {
                     assert.equal(respuesta.status, escenario === 'duplicado' ? 409 : escenario === 'inexistente' ? 404 : 500);
                     assert.equal(resultado.success, false);
-                    if (escenario !== 'rollback') assert.deepEqual({ dependencias, seguimientos }, anterior);
+                    if (!escenario.endsWith('rollback')) assert.deepEqual({ dependencias, seguimientos }, anterior);
                     if (escenario === 'conexion') {
                         assert.deepEqual(eventos, ['conexion']);
-                    } else if (escenario === 'rollback') {
+                    } else if (escenario.endsWith('rollback')) {
+                        assert.equal(eventos.filter(evento => evento === 'rollback').length, 1);
                         assert.equal(eventos.at(-1), 'destroy');
                         assert.equal(eventos.includes('release'), false);
                     } else {

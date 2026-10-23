@@ -6,6 +6,7 @@ const fs = require('fs');
 const crypto = require('crypto');
 const { PDFDocument, EncryptedPDFError } = require('pdf-lib');
 const pool = require('./db');
+const { revertirTrasError } = require('./transacciones');
 const calcularSemaforoBackend = require('./semaforo');
 const { agregarDias, obtenerFechaLocal } = require('./semaforo');
 const { normalizarTexto, obtenerTiempoRespuesta } = require('./plazos');
@@ -57,7 +58,7 @@ app.use('/uploads', autenticar, async (req, res, next) => {
         }
         const filtro = filtroDependencia(req.usuario);
         const filtroRespuestaGlobal = req.usuario.rol === 'funcionario'
-            ? `AND (r.destino_todas_dependencias = 0 OR rr.id IS NULL OR rr.radicado_dependencia_id IN (
+            ? `AND (r.destino_todas_dependencias = 0 OR rr.radicado_dependencia_id IN (
                     SELECT rdx.id FROM radicado_dependencias rdx
                     WHERE rdx.numero_radicado = rr.numero_radicado
                       AND rdx.dependencia_id = ?
@@ -65,13 +66,22 @@ app.use('/uploads', autenticar, async (req, res, next) => {
             : '';
         const [rows] = await pool.execute(
             `SELECT r.id FROM radicados r
-             LEFT JOIN documentos_radicado ddoc ON ddoc.numero_radicado = r.numero_radicado
-             LEFT JOIN respuestas_radicado rr ON rr.numero_radicado = r.numero_radicado
-             LEFT JOIN documentos_respuesta dr ON dr.respuesta_id = rr.id
-             WHERE (ddoc.ruta_archivo = ? OR rr.ruta_archivo = ? OR dr.ruta_archivo = ?)
-               AND ${filtro.sql} ${filtroRespuestaGlobal} LIMIT 1`,
-            [nombreArchivo, nombreArchivo, nombreArchivo, ...filtro.valores,
-                ...(req.usuario.rol === 'funcionario' ? [req.usuario.dependencia_id] : [])]
+             WHERE (
+                 EXISTS (
+                     SELECT 1 FROM documentos_radicado ddoc
+                     WHERE ddoc.numero_radicado = r.numero_radicado AND ddoc.ruta_archivo = ?
+                 ) OR EXISTS (
+                     SELECT 1 FROM respuestas_radicado rr
+                     WHERE rr.numero_radicado = r.numero_radicado
+                       AND (rr.ruta_archivo = ? OR EXISTS (
+                           SELECT 1 FROM documentos_respuesta dr
+                           WHERE dr.respuesta_id = rr.id AND dr.ruta_archivo = ?
+                       )) ${filtroRespuestaGlobal}
+                 )
+             ) AND ${filtro.sql} LIMIT 1`,
+            [nombreArchivo, nombreArchivo, nombreArchivo,
+                ...(req.usuario.rol === 'funcionario' ? [req.usuario.dependencia_id] : []),
+                ...filtro.valores]
         );
         if (!rows.length) {
             return responderError(res, 404, 'Archivo no encontrado o fuera de tu dependencia.');
@@ -104,7 +114,9 @@ function filtroPdf(req, file, cb) {
     const extensionPdf = path.extname(file.originalname).toLowerCase() === '.pdf';
     const mimeValido = !file.mimetype || file.mimetype === 'application/pdf';
     if (!extensionPdf || !mimeValido) {
-        return cb(new Error('Cada documento adjunto debe ser un PDF.'));
+        return cb(Object.assign(new Error('Cada documento adjunto debe ser un PDF.'), {
+            code: 'PDF_TIPO_INVALIDO'
+        }));
     }
     return cb(null, true);
 }
@@ -148,12 +160,7 @@ function recibirArchivosRespuesta(req, res, next) {
     uploadRespuesta.array('archivos', 5)(req, res, (error) => {
         if (!error) return next();
         (req.files || []).forEach(eliminarArchivoSubido);
-        const mensaje = error instanceof multer.MulterError && error.code === 'LIMIT_FILE_COUNT'
-            ? 'Puedes adjuntar máximo 5 archivos PDF.'
-            : error instanceof multer.MulterError && error.code === 'LIMIT_FILE_SIZE'
-                ? 'Cada PDF debe pesar máximo 10 MB.'
-                : error.message || 'No se pudieron procesar los archivos adjuntos.';
-        return responderError(res, 400, mensaje);
+        return responderErrorCarga(res, error);
     });
 }
 
@@ -168,18 +175,34 @@ function recibirArchivosRadicacion(req, res, next) {
             : [...(archivosPorCampo.archivos || []), ...(archivosPorCampo.archivo || [])];
         if (error || archivos.length > 5) {
             archivos.forEach(eliminarArchivoSubido);
-            const limiteSuperado = archivos.length > 5 || error?.code === 'LIMIT_FILE_COUNT';
-            const limiteTamano = error?.code === 'LIMIT_FILE_SIZE';
-            const mensaje = limiteSuperado
-                ? 'Puedes adjuntar máximo 5 archivos PDF.'
-                : limiteTamano
-                    ? 'Cada PDF debe pesar máximo 10 MB.'
-                    : error.message || 'No se pudieron procesar los archivos adjuntos.';
-            return responderError(res, 400, mensaje);
+            return responderErrorCarga(res, error || new multer.MulterError('LIMIT_FILE_COUNT'));
         }
         req.files = archivos;
         return next();
     });
+}
+
+function responderErrorCarga(res, error) {
+    if (error instanceof multer.MulterError) {
+        const mensaje = error.code === 'LIMIT_FILE_COUNT'
+            ? 'Puedes adjuntar máximo 5 archivos PDF.'
+            : error.code === 'LIMIT_FILE_SIZE'
+                ? 'Cada PDF debe pesar máximo 10 MB.'
+                : 'No se pudieron procesar los archivos adjuntos. Revisa los campos y límites de la carga.';
+        return responderError(res, 400, mensaje);
+    }
+    if (error.code === 'PDF_TIPO_INVALIDO') {
+        return responderError(res, 400, 'Cada documento adjunto debe ser un PDF.');
+    }
+    const erroresMultipart = new Set([
+        'Unexpected end of form', 'Unexpected end of file', 'Malformed part header',
+        'Multipart: Boundary not found'
+    ]);
+    if (erroresMultipart.has(error.message)) {
+        return responderError(res, 400, 'La carga de archivos está incompleta o tiene un formato inválido.');
+    }
+    console.error('Error interno al almacenar los archivos adjuntos:', error);
+    return responderError(res, 500, 'No se pudieron almacenar los archivos adjuntos. Intenta nuevamente.');
 }
 
 const CATEGORIAS_TRAMITE = new Set([
@@ -506,7 +529,7 @@ app.post('/api/radicados', permitirRoles('administrador', 'ventanilla'), recibir
                     ?, ?, ?, ?, ?, ?, ?, ?)
         `;
 
-        const connection = await pool.getConnection();
+        let connection = await pool.getConnection();
         let numeroRadicado;
         try {
             await connection.beginTransaction();
@@ -620,10 +643,10 @@ app.post('/api/radicados', permitirRoles('administrador', 'ventanilla'), recibir
             );
             await connection.commit();
         } catch (error) {
-            await connection.rollback();
+            ({ connection, error } = await revertirTrasError(connection, error));
             throw error;
         } finally {
-            connection.release();
+            if (connection) connection.release();
         }
 
         console.log(`✅ Radicado ${numeroRadicado} guardado correctamente.`);
@@ -836,7 +859,7 @@ app.post('/api/tipos-tramite', protegerAdministracion, async (req, res) => {
             message: reglaRespuesta ? 'Tipo de trámite y término inicial creados.' : 'Tipo de trámite sin respuesta creado.'
         });
     } catch (error) {
-        if (connection) await connection.rollback();
+        ({ connection, error } = await revertirTrasError(connection, error));
         if (error.code === 'ER_DUP_ENTRY') {
             return responderError(res, 409, 'Ya existe un tipo de trámite con ese código o nombre.');
         }
@@ -868,6 +891,7 @@ app.post('/api/terminos-legales', protegerAdministracion, async (req, res) => {
     }
 
     let connection;
+    let reversionIntentada = false;
     try {
         connection = await pool.getConnection();
         await connection.beginTransaction();
@@ -876,6 +900,7 @@ app.post('/api/terminos-legales', protegerAdministracion, async (req, res) => {
             [tipoId]
         );
         if (tipos.length === 0) {
+            reversionIntentada = true;
             await connection.rollback();
             return responderError(res, 404, 'No existe un tipo de trámite activo con ese identificador.');
         }
@@ -886,6 +911,7 @@ app.post('/api/terminos-legales', protegerAdministracion, async (req, res) => {
             [tipoId, inicio]
         );
         if (conflictos.length > 0) {
+            reversionIntentada = true;
             await connection.rollback();
             return responderError(
                 res,
@@ -915,7 +941,7 @@ app.post('/api/terminos-legales', protegerAdministracion, async (req, res) => {
             message: 'Nuevo término registrado sin alterar los términos ya aplicados a radicados.'
         });
     } catch (error) {
-        if (connection) await connection.rollback();
+        ({ connection, error } = await revertirTrasError(connection, error, reversionIntentada));
         console.error('Error al crear versión del término legal:', error);
         return responderError(res, 500, 'Error interno al actualizar el término legal.');
     } finally {
@@ -1338,6 +1364,7 @@ app.post(
             return responderError(res, 400, 'La respuesta debe tener entre 10 y 10.000 caracteres.');
         }
         let connection;
+        let reversionIntentada = false;
         try {
             for (const archivo of req.files || []) {
                 const errorPdf = await validarArchivoPdf(archivo);
@@ -1357,10 +1384,12 @@ app.post(
                 [numeroRadicado, ...filtro.valores]
             );
             if (!radicados.length) {
+                reversionIntentada = true;
                 await connection.rollback(); (req.files || []).forEach(eliminarArchivoSubido);
                 return responderError(res, 404, 'Radicado no encontrado o fuera de tu dependencia.');
             }
             if (!requiereRespuesta(radicados[0])) {
+                reversionIntentada = true;
                 await connection.rollback(); (req.files || []).forEach(eliminarArchivoSubido);
                 return responderError(res, 409, 'Este radicado no requiere respuesta. Confirma su revisión como Enterado.');
             }
@@ -1371,6 +1400,7 @@ app.post(
                 if (req.usuario.rol !== 'funcionario') {
                     const idSolicitado = Number(req.body.radicado_dependencia_id);
                     if (!Number.isSafeInteger(idSolicitado) || idSolicitado < 1) {
+                        reversionIntentada = true;
                         await connection.rollback(); (req.files || []).forEach(eliminarArchivoSubido);
                         return responderError(res, 400, 'Selecciona la dependencia de seguimiento para responder.');
                     }
@@ -1380,6 +1410,7 @@ app.post(
                         [idSolicitado, numeroRadicado]
                     );
                     if (!objetivos.length) {
+                        reversionIntentada = true;
                         await connection.rollback(); (req.files || []).forEach(eliminarArchivoSubido);
                         return responderError(res, 404, 'La asignación de dependencia no existe.');
                     }
@@ -1393,6 +1424,7 @@ app.post(
                         [numeroRadicado, dependenciaObjetivo]
                     );
                     if (!objetivos.length) {
+                        reversionIntentada = true;
                         await connection.rollback(); (req.files || []).forEach(eliminarArchivoSubido);
                         return responderError(res, 404, 'El radicado no está asignado a tu dependencia.');
                     }
@@ -1401,6 +1433,7 @@ app.post(
                 }
             }
             if (esEstadoFinal(estadoActual)) {
+                reversionIntentada = true;
                 await connection.rollback(); (req.files || []).forEach(eliminarArchivoSubido);
                 return responderError(res, 409, 'Este radicado ya fue respondido.');
             }
@@ -1411,6 +1444,7 @@ app.post(
                 [idAsignacion || numeroRadicado]
             );
             if (existente.length) {
+                reversionIntentada = true;
                 await connection.rollback(); (req.files || []).forEach(eliminarArchivoSubido);
                 return responderError(res, 409, 'Ya existe una respuesta registrada para este radicado.');
             }
@@ -1459,7 +1493,7 @@ app.post(
                 semaforo
             });
         } catch (error) {
-            if (connection) await connection.rollback();
+            ({ connection, error } = await revertirTrasError(connection, error, reversionIntentada));
             // MySQL no administra los archivos del disco; por eso los borramos
             // manualmente cuando la transacción no se pudo completar.
             (req.files || []).forEach(eliminarArchivoSubido);
@@ -1489,6 +1523,7 @@ app.put(
         }
 
         let connection;
+        let reversionIntentada = false;
         try {
             connection = await pool.getConnection();
             await connection.beginTransaction();
@@ -1499,6 +1534,7 @@ app.put(
                 [numero_radicado, ...filtro.valores]
             );
             if (actuales.length === 0) {
+                reversionIntentada = true;
                 await connection.rollback();
                 return responderError(res, 404, 'Radicado no encontrado o fuera de tu dependencia.');
             }
@@ -1513,6 +1549,7 @@ app.put(
                         [numero_radicado, req.usuario.dependencia_id]
                     );
                     if (!asignaciones.length) {
+                        reversionIntentada = true;
                         await connection.rollback();
                         return responderError(res, 404, 'El radicado no está asignado a tu dependencia.');
                     }
@@ -1521,6 +1558,7 @@ app.put(
                 } else {
                     const idSolicitado = Number(req.body.radicado_dependencia_id);
                     if (!Number.isSafeInteger(idSolicitado) || idSolicitado < 1) {
+                        reversionIntentada = true;
                         await connection.rollback();
                         return responderError(res, 400, 'Selecciona la dependencia de seguimiento para cambiar el estado.');
                     }
@@ -1530,6 +1568,7 @@ app.put(
                         [idSolicitado, numero_radicado]
                     );
                     if (!asignaciones.length) {
+                        reversionIntentada = true;
                         await connection.rollback();
                         return responderError(res, 404, 'La asignación de dependencia no existe.');
                     }
@@ -1538,10 +1577,12 @@ app.put(
                 }
             }
             if (esEstadoFinal(estadoAnterior)) {
+                reversionIntentada = true;
                 await connection.rollback();
                 return responderError(res, 409, 'El radicado ya tiene un estado final y no puede reabrirse.');
             }
             if (estadoNuevo === 'Enterado' && requiereRespuesta(actuales[0])) {
+                reversionIntentada = true;
                 await connection.rollback();
                 return responderError(res, 409, 'Este radicado requiere una respuesta institucional, no puede cerrarse como Enterado.');
             }
@@ -1605,9 +1646,7 @@ app.put(
                 semaforo: radicadoActualizado.semaforo
             });
         } catch (error) {
-            if (connection) {
-                await connection.rollback();
-            }
+            ({ connection, error } = await revertirTrasError(connection, error, reversionIntentada));
             console.error('Error al actualizar el estado:', error);
             return responderError(res, 500, 'Error en el servidor al actualizar.');
         } finally {
@@ -1619,6 +1658,19 @@ app.put(
 
 app.use((error, req, res, next) => {
     if (res.headersSent) return next(error);
+    const erroresCuerpo = {
+        'entity.parse.failed': [400, 'El cuerpo JSON de la solicitud no es válido.'],
+        'entity.too.large': [413, 'El cuerpo de la solicitud supera el tamaño permitido.'],
+        'request.aborted': [400, 'La solicitud se interrumpió antes de completarse.'],
+        'request.size.invalid': [400, 'El tamaño de la solicitud no es válido.'],
+        'encoding.unsupported': [415, 'La codificación de la solicitud no es compatible.'],
+        'charset.unsupported': [415, 'El juego de caracteres de la solicitud no es compatible.']
+    };
+    if (Object.hasOwn(erroresCuerpo, error.type)) {
+        const [status, mensaje] = erroresCuerpo[error.type];
+        console.warn('Solicitud rechazada al procesar el cuerpo:', error.type);
+        return responderError(res, status, mensaje);
+    }
     console.error('Error procesando la solicitud:', error);
     if (error.code === 'ER_DUP_ENTRY') {
         return responderError(res, 409, 'El email o nombre ya esta registrado.');

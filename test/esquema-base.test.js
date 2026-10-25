@@ -36,6 +36,17 @@ test('el esquema base y los ALTER de radicados cubren el contrato actual sin con
     const migracion020 = await fs.readFile(path.join(directorio, '020_informativos_sin_respuesta.js'), 'utf8');
     assert.match(migracion020, /ADD COLUMN requiere_respuesta TINYINT NOT NULL DEFAULT 1/);
     assert.match(migracion020, /ADD COLUMN fecha_enterado DATETIME NULL/);
+    const migracion021 = await fs.readFile(path.join(directorio, '021_audit_log_radicados.sql'), 'utf8');
+    for (const columna of [
+        'event_type', 'actor_id', 'actor_name', 'dependencia_id', 'dependencia_nombre',
+        'radicado_dependencia_id', 'session_id', 'ip_address', 'ocurrido_en_utc'
+    ]) {
+        assert.match(migracion021, new RegExp(`ADD COLUMN ${columna}\\b`));
+    }
+    assert.match(migracion021, /DATETIME\(6\)/);
+    assert.match(migracion021, /idx_historial_evento_cursor/);
+    assert.match(migracion021, /idx_historial_sesion/);
+    assert.doesNotMatch(migracion021, /\b(?:DROP|UPDATE|DELETE|TRUNCATE)\b/i);
     columnas.add('requiere_respuesta');
     columnas.add('fecha_enterado');
     const server = await fs.readFile(path.join(__dirname, '..', 'server.js'), 'utf8');

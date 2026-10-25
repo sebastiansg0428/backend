@@ -51,6 +51,7 @@ este orden, deteniendote si un paso falla:
 | 018 | [018_seguimiento_por_dependencia.sql](migrations/018_seguimiento_por_dependencia.sql) |
 | 019 | [019_procedencia_radicados.sql](migrations/019_procedencia_radicados.sql) |
 | 020 | `node migrations\020_informativos_sin_respuesta.js` |
+| 021 | [021_audit_log_radicados.sql](migrations/021_audit_log_radicados.sql) |
 
 Las migraciones SQL no son todas idempotentes y los cambios DDL pueden quedar
 confirmados aunque un paso posterior falle: no vuelvas a importar toda la
@@ -64,6 +65,9 @@ Para una **base existente**, respalda estructura, datos y adjuntos, identifica
 las migraciones ya aplicadas y ejecuta solo las pendientes en orden. **No
 ejecutes 000** ni recrees `radicados`: no cambia ni reemplaza datos existentes.
 Actualmente no hay un registro automatico de migraciones aplicadas.
+
+La migracion 021 es incremental y debe aplicarse una sola vez, despues de 020.
+No se conecta ni se ejecuta automaticamente al iniciar el servidor.
 
 ### Alcance de la validacion del esquema
 
@@ -665,6 +669,35 @@ respaldo historico si falta la recepcion. No se actualizan filas ni se modifican
 los snapshots de terminos legales o el calculo del semaforo. Los filtros y
 permisos permanecen iguales. Las pruebas verifican el contrato SQL con dobles;
 la validacion del orden y plan de ejecucion en un MySQL aislado sigue pendiente.
+
+### Trazabilidad y auditoria de radicados
+
+La migracion 021 amplia `historial_radicado`; no renombra ni elimina columnas
+ni reescribe las filas historicas. Los nuevos eventos de radicacion, asignacion,
+adjuntos, cambios de estado, respuestas y ampliaciones se insertan dentro de la
+misma transaccion que confirma la operacion. Un fallo al insertar el evento
+revierte tambien el cambio de negocio. Los eventos registran actor y nombre
+snapshot, dependencia/asignacion cuando aplica, IP observada por Express,
+UUID aleatorio de sesion no reutilizable como bearer y un instante UTC en
+`ocurrido_en_utc`. Nunca se persiste token ni contenido de archivos.
+
+La IP usa `req.ip` con la configuracion predeterminada de Express, que no confia
+en `X-Forwarded-For`; tras un proxy probablemente identifica el proxy y no al
+cliente. No habilites `trust proxy` sin conocer y limitar la topologia confiable.
+Define con el responsable de privacidad la retencion y el acceso a IP/sesion:
+el endpoint de Timeline no entrega esos dos campos.
+
+`GET /api/radicados/:numero_radicado/historial` pagina por cursor de ID
+descendente (25 por defecto, maximo 100), respeta `autorizarRadicado` y conserva
+la clave JSON `historial`. La respuesta omite IP y UUID de sesion. La interfaz
+Consulta muestra los eventos legados con hora original sin confirmar su zona y
+los eventos nuevos presentados en America/Bogota.
+
+Esta tabla y el RBAC de la aplicacion no hacen la evidencia inmutable frente a
+administradores de MySQL o del host. No constituye certificacion legal ni
+garantiza integridad criptografica. Para ello se requieren controles separados
+de privilegios, respaldos protegidos y politica institucional/juridica de
+retencion. No se agrega el estado/flujo de archivo en esta migracion.
 
 La radicación acepta de 1 a 5 partes `archivos` (también conserva el campo
 singular `archivo` para la interfaz anterior), con un máximo de 10 MB por PDF.

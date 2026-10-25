@@ -7,6 +7,7 @@ const crypto = require('crypto');
 const { PDFDocument, EncryptedPDFError } = require('pdf-lib');
 const pool = require('./db');
 const { revertirTrasError } = require('./transacciones');
+const { registrarEventoRadicado } = require('./audit-log');
 const calcularSemaforoBackend = require('./semaforo');
 const { agregarDias, obtenerFechaLocal } = require('./semaforo');
 const { normalizarTexto, obtenerTiempoRespuesta } = require('./plazos');
@@ -627,11 +628,10 @@ app.post('/api/radicados', permitirRoles('administrador', 'ventanilla'), recibir
                     fechaLimite
                 ]
             );
-            await connection.execute(
-                `INSERT INTO historial_radicado
-                    (numero_radicado, campo_modificado, valor_nuevo, usuario, motivo)
-                 VALUES (?, 'regla_respuesta', ?, ?, 'Regla de respuesta aplicada al crear el radicado')`,
-                [numeroRadicado, JSON.stringify({
+            await registrarEventoRadicado(connection, req, {
+                numeroRadicado,
+                tipo: 'regla_respuesta_aplicada',
+                valorNuevo: JSON.stringify({
                     tipo_tramite_id: termino.id,
                     requiere_respuesta: exigeRespuesta,
                     termino_legal_id: exigeRespuesta ? termino.termino_legal_id : null,
@@ -639,8 +639,57 @@ app.post('/api/radicados', permitirRoles('administrador', 'ventanilla'), recibir
                     tipo_dias: exigeRespuesta ? termino.tipo_dias : null,
                     fundamento_legal: exigeRespuesta ? termino.fundamento_legal : null,
                     fecha_limite: fechaLimite
-                }), String(req.usuario.id)]
-            );
+                }),
+                motivo: 'Regla de respuesta aplicada al crear el radicado.'
+            });
+            await registrarEventoRadicado(connection, req, {
+                numeroRadicado,
+                tipo: 'radicado_creado',
+                dependenciaId: destinoTodasDependencias ? null : dependencia.id,
+                dependenciaNombre: dependencia.nombre,
+                valorNuevo: destinoTodasDependencias ? 'Todas las dependencias' : dependencia.nombre,
+                motivo: 'Radicado recibido y registrado.'
+            });
+            if (destinoTodasDependencias) {
+                const [asignaciones] = await connection.execute(
+                    `SELECT rd.id, rd.dependencia_id, d.nombre
+                     FROM radicado_dependencias rd
+                     JOIN dependencias d ON d.id = rd.dependencia_id
+                     WHERE rd.numero_radicado = ?
+                     ORDER BY rd.dependencia_id`,
+                    [numeroRadicado]
+                );
+                for (const asignacion of asignaciones) {
+                    await registrarEventoRadicado(connection, req, {
+                        numeroRadicado,
+                        tipo: 'radicado_asignado',
+                        dependenciaId: asignacion.dependencia_id,
+                        dependenciaNombre: asignacion.nombre,
+                        radicadoDependenciaId: asignacion.id,
+                        valorNuevo: asignacion.nombre,
+                        motivo: 'Radicado global asignado a dependencia.'
+                    });
+                }
+            } else {
+                await registrarEventoRadicado(connection, req, {
+                    numeroRadicado,
+                    tipo: 'radicado_asignado',
+                    dependenciaId: dependencia.id,
+                    dependenciaNombre: dependencia.nombre,
+                    valorNuevo: dependencia.nombre,
+                    motivo: 'Radicado asignado a dependencia de destino.'
+                });
+            }
+            if (archivos.length) {
+                await registrarEventoRadicado(connection, req, {
+                    numeroRadicado,
+                    tipo: 'documentos_radicado_adjuntados',
+                    dependenciaId: destinoTodasDependencias ? null : dependencia.id,
+                    dependenciaNombre: dependencia.nombre,
+                    valorNuevo: String(archivos.length),
+                    motivo: `Se adjuntaron ${archivos.length} documento(s) PDF al radicado.`
+                });
+            }
             await connection.commit();
         } catch (error) {
             ({ connection, error } = await revertirTrasError(connection, error));
@@ -1082,15 +1131,31 @@ app.get('/api/alertas', async (req, res) => {
 });
 
 app.get('/api/radicados/:numero_radicado/historial', autorizarRadicado, async (req, res) => {
+    const limite = req.query.limite === undefined ? 25 : Number(req.query.limite);
+    const cursor = req.query.cursor === undefined ? null : Number(req.query.cursor);
+    if (!Number.isSafeInteger(limite) || limite < 1 || limite > 100 ||
+        (cursor !== null && (!Number.isSafeInteger(cursor) || cursor < 1))) {
+        return responderError(res, 400, 'limite debe ser de 1 a 100 y cursor debe ser un entero positivo.');
+    }
     try {
         const [rows] = await pool.execute(
-            `SELECT campo_modificado, valor_anterior, valor_nuevo, usuario, motivo, creado_en
+            `SELECT id, campo_modificado, valor_anterior, valor_nuevo, usuario, motivo,
+                    creado_en, event_type, actor_id, actor_name, dependencia_id,
+                    dependencia_nombre, radicado_dependencia_id, ocurrido_en_utc
              FROM historial_radicado
-             WHERE numero_radicado = ?
-             ORDER BY creado_en DESC, id DESC`,
-            [req.params.numero_radicado]
+             WHERE numero_radicado = ? AND (? IS NULL OR id < ?)
+             ORDER BY id DESC
+             LIMIT ?`,
+            [req.params.numero_radicado, cursor, cursor, limite + 1]
         );
-        return res.json({ success: true, historial: rows });
+        const hasMore = rows.length > limite;
+        const historial = hasMore ? rows.slice(0, limite) : rows;
+        return res.json({
+            success: true,
+            historial,
+            next_cursor: hasMore ? historial.at(-1).id : null,
+            has_more: hasMore
+        });
     } catch (error) {
         console.error('Error al consultar el historial del radicado:', error);
         return responderError(res, 500, 'Error interno al consultar el historial.');
@@ -1304,18 +1369,13 @@ app.post(
                  WHERE numero_radicado = ?`,
                 [fecha_limite_nueva, req.params.numero_radicado]
             );
-            await connection.execute(
-                `INSERT INTO historial_radicado
-                    (numero_radicado, campo_modificado, valor_anterior, valor_nuevo, usuario, motivo)
-                 VALUES (?, 'fecha_limite_actual', ?, ?, ?, ?)`,
-                [
-                    req.params.numero_radicado,
-                    fechaLimiteAnterior,
-                    fecha_limite_nueva,
-                    String(req.usuario.id),
-                    `${motivo.trim()} | ${fundamento_legal.trim()}`
-                ]
-            );
+            await registrarEventoRadicado(connection, req, {
+                numeroRadicado: req.params.numero_radicado,
+                tipo: 'termino_ampliado',
+                valorAnterior: fechaLimiteAnterior,
+                valorNuevo: fecha_limite_nueva,
+                motivo: `${motivo.trim()} | ${fundamento_legal.trim()}`
+            });
             await connection.commit();
             return res.json({
                 success: true,
@@ -1379,7 +1439,8 @@ app.post(
             await connection.beginTransaction();
             const filtro = filtroDependencia(req.usuario, 'r');
             const [radicados] = await connection.execute(
-                `SELECT r.estado, r.destino_todas_dependencias, r.requiere_respuesta FROM radicados r
+                `SELECT r.estado, r.destino_todas_dependencias, r.requiere_respuesta,
+                        r.dependencia_destino_id, r.dependencia_destino FROM radicados r
                  WHERE r.numero_radicado = ? AND ${filtro.sql} FOR UPDATE`,
                 [numeroRadicado, ...filtro.valores]
             );
@@ -1395,6 +1456,8 @@ app.post(
             }
             let idAsignacion = null;
             let estadoActual = radicados[0].estado;
+            let dependenciaEventoId = radicados[0].dependencia_destino_id ?? null;
+            let dependenciaEventoNombre = radicados[0].dependencia_destino ?? null;
             if (radicados[0].destino_todas_dependencias) {
                 let dependenciaObjetivo = req.usuario.dependencia_id;
                 if (req.usuario.rol !== 'funcionario') {
@@ -1405,8 +1468,10 @@ app.post(
                         return responderError(res, 400, 'Selecciona la dependencia de seguimiento para responder.');
                     }
                     const [objetivos] = await connection.execute(
-                        `SELECT id, dependencia_id, estado FROM radicado_dependencias
-                         WHERE id = ? AND numero_radicado = ? FOR UPDATE`,
+                        `SELECT rd.id, rd.dependencia_id, rd.estado, d.nombre AS dependencia_nombre
+                         FROM radicado_dependencias rd
+                         JOIN dependencias d ON d.id = rd.dependencia_id
+                         WHERE rd.id = ? AND rd.numero_radicado = ? FOR UPDATE`,
                         [idSolicitado, numeroRadicado]
                     );
                     if (!objetivos.length) {
@@ -1417,10 +1482,14 @@ app.post(
                     idAsignacion = objetivos[0].id;
                     dependenciaObjetivo = objetivos[0].dependencia_id;
                     estadoActual = objetivos[0].estado;
+                    dependenciaEventoId = dependenciaObjetivo;
+                    dependenciaEventoNombre = objetivos[0].dependencia_nombre;
                 } else {
                     const [objetivos] = await connection.execute(
-                        `SELECT id, estado FROM radicado_dependencias
-                         WHERE numero_radicado = ? AND dependencia_id = ? FOR UPDATE`,
+                        `SELECT rd.id, rd.estado, rd.dependencia_id, d.nombre AS dependencia_nombre
+                         FROM radicado_dependencias rd
+                         JOIN dependencias d ON d.id = rd.dependencia_id
+                         WHERE rd.numero_radicado = ? AND rd.dependencia_id = ? FOR UPDATE`,
                         [numeroRadicado, dependenciaObjetivo]
                     );
                     if (!objetivos.length) {
@@ -1430,6 +1499,8 @@ app.post(
                     }
                     idAsignacion = objetivos[0].id;
                     estadoActual = objetivos[0].estado;
+                    dependenciaEventoId = objetivos[0].dependencia_id;
+                    dependenciaEventoNombre = objetivos[0].dependencia_nombre;
                 }
             }
             if (esEstadoFinal(estadoActual)) {
@@ -1476,11 +1547,27 @@ app.post(
                     [numeroRadicado]
                 );
             }
-            await connection.execute(
-                `INSERT INTO historial_radicado (numero_radicado, campo_modificado, valor_anterior, valor_nuevo, usuario, motivo)
-                 VALUES (?, 'estado', ?, 'Respondido', ?, 'Respuesta institucional enviada')`,
-                [numeroRadicado, estadoActual || 'Recibido', String(req.usuario.id)]
-            );
+            await registrarEventoRadicado(connection, req, {
+                numeroRadicado,
+                tipo: 'respuesta_enviada',
+                valorAnterior: estadoActual || 'Recibido',
+                valorNuevo: 'Respondido',
+                dependenciaId: dependenciaEventoId,
+                dependenciaNombre: dependenciaEventoNombre,
+                radicadoDependenciaId: idAsignacion,
+                motivo: 'Respuesta institucional enviada.'
+            });
+            if (req.files?.length) {
+                await registrarEventoRadicado(connection, req, {
+                    numeroRadicado,
+                    tipo: 'documentos_respuesta_adjuntados',
+                    dependenciaId: dependenciaEventoId,
+                    dependenciaNombre: dependenciaEventoNombre,
+                    radicadoDependenciaId: idAsignacion,
+                    valorNuevo: String(req.files.length),
+                    motivo: `Se adjuntaron ${req.files.length} documento(s) PDF a la respuesta institucional.`
+                });
+            }
             await connection.commit();
             const fechaRespuesta = new Date().toISOString();
             // La respuesta termina el trámite; devolvemos el semáforo ya recalculado
@@ -1529,7 +1616,9 @@ app.put(
             await connection.beginTransaction();
             const filtro = filtroDependencia(req.usuario, 'radicados');
             const [actuales] = await connection.execute(
-                `SELECT estado, destino_todas_dependencias, requiere_respuesta FROM radicados
+                `SELECT estado, destino_todas_dependencias, requiere_respuesta,
+                        dependencia_destino_id, dependencia_destino
+                 FROM radicados
                  WHERE numero_radicado = ? AND ${filtro.sql} FOR UPDATE`,
                 [numero_radicado, ...filtro.valores]
             );
@@ -1541,11 +1630,15 @@ app.put(
 
             let idAsignacion = null;
             let estadoAnterior = actuales[0].estado;
+            let dependenciaEventoId = actuales[0].dependencia_destino_id ?? null;
+            let dependenciaEventoNombre = actuales[0].dependencia_destino ?? null;
             if (actuales[0].destino_todas_dependencias) {
                 if (req.usuario.rol === 'funcionario') {
                     const [asignaciones] = await connection.execute(
-                        `SELECT id, estado FROM radicado_dependencias
-                         WHERE numero_radicado = ? AND dependencia_id = ? FOR UPDATE`,
+                        `SELECT rd.id, rd.estado, rd.dependencia_id, d.nombre AS dependencia_nombre
+                         FROM radicado_dependencias rd
+                         JOIN dependencias d ON d.id = rd.dependencia_id
+                         WHERE rd.numero_radicado = ? AND rd.dependencia_id = ? FOR UPDATE`,
                         [numero_radicado, req.usuario.dependencia_id]
                     );
                     if (!asignaciones.length) {
@@ -1555,6 +1648,8 @@ app.put(
                     }
                     idAsignacion = asignaciones[0].id;
                     estadoAnterior = asignaciones[0].estado;
+                    dependenciaEventoId = asignaciones[0].dependencia_id;
+                    dependenciaEventoNombre = asignaciones[0].dependencia_nombre;
                 } else {
                     const idSolicitado = Number(req.body.radicado_dependencia_id);
                     if (!Number.isSafeInteger(idSolicitado) || idSolicitado < 1) {
@@ -1563,8 +1658,10 @@ app.put(
                         return responderError(res, 400, 'Selecciona la dependencia de seguimiento para cambiar el estado.');
                     }
                     const [asignaciones] = await connection.execute(
-                        `SELECT id, estado FROM radicado_dependencias
-                         WHERE id = ? AND numero_radicado = ? FOR UPDATE`,
+                        `SELECT rd.id, rd.estado, rd.dependencia_id, d.nombre AS dependencia_nombre
+                         FROM radicado_dependencias rd
+                         JOIN dependencias d ON d.id = rd.dependencia_id
+                         WHERE rd.id = ? AND rd.numero_radicado = ? FOR UPDATE`,
                         [idSolicitado, numero_radicado]
                     );
                     if (!asignaciones.length) {
@@ -1574,6 +1671,8 @@ app.put(
                     }
                     idAsignacion = asignaciones[0].id;
                     estadoAnterior = asignaciones[0].estado;
+                    dependenciaEventoId = asignaciones[0].dependencia_id;
+                    dependenciaEventoNombre = asignaciones[0].dependencia_nombre;
                 }
             }
             if (esEstadoFinal(estadoAnterior)) {
@@ -1601,13 +1700,16 @@ app.put(
                     [estadoNuevo, estadoNuevo, numero_radicado]
                 );
             }
-            await connection.execute(
-                `INSERT INTO historial_radicado
-                (numero_radicado, campo_modificado, valor_anterior, valor_nuevo, usuario, motivo)
-             VALUES (?, 'estado', ?, ?, ?, ?)`,
-                [numero_radicado, estadoAnterior || null, estadoNuevo, String(req.usuario.id),
-                    `Cambio de estado${idAsignacion ? ` de asignación ${idAsignacion}` : ''}`]
-            );
+            await registrarEventoRadicado(connection, req, {
+                numeroRadicado: numero_radicado,
+                tipo: 'estado_cambiado',
+                valorAnterior: estadoAnterior || null,
+                valorNuevo: estadoNuevo,
+                dependenciaId: dependenciaEventoId,
+                dependenciaNombre: dependenciaEventoNombre,
+                radicadoDependenciaId: idAsignacion,
+                motivo: `Estado cambiado a ${estadoNuevo}.`
+            });
             const [rows] = await connection.execute(
                 `SELECT r.*,
                     rt.fecha_recepcion AS termino_fecha_recepcion,

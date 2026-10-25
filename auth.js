@@ -4,6 +4,7 @@ const express = require('express');
 const bcrypt = require('bcrypt');
 const pool = require('./db');
 const { revertirTrasError } = require('./transacciones');
+const { registrarEventoRadicado } = require('./audit-log');
 const limitesLogin = require('./limites-login');
 
 const scrypt = promisify(crypto.scrypt);
@@ -54,7 +55,11 @@ function crearSesion(usuarioId) {
         if (sesion.expira <= ahora) sesiones.delete(clave);
     }
     const token = crypto.randomBytes(32).toString('hex');
-    sesiones.set(hashToken(token), { usuarioId, expira: ahora + DURACION_SESION });
+    sesiones.set(hashToken(token), {
+        usuarioId,
+        expira: ahora + DURACION_SESION,
+        idSesion: crypto.randomUUID()
+    });
     return token;
 }
 
@@ -92,9 +97,51 @@ async function autenticar(req, res, next) {
         }
         req.usuario = rows[0];
         req.claveSesion = clave;
+        req.idSesion = sesion.idSesion;
         return next();
     } catch (error) {
         return next(error);
+    }
+}
+
+async function asignarDependenciaARadicadosGlobales(connection, req, dependenciaId) {
+    const [pendientes] = await connection.execute(
+        `SELECT r.numero_radicado FROM radicados r
+         WHERE r.destino_todas_dependencias = 1
+           AND NOT EXISTS (
+               SELECT 1 FROM radicado_dependencias rd
+               WHERE rd.numero_radicado = r.numero_radicado
+                 AND rd.dependencia_id = ?
+           )`,
+        [dependenciaId]
+    );
+    if (!pendientes.length) return;
+    await connection.execute(
+        `INSERT IGNORE INTO radicado_dependencias (numero_radicado, dependencia_id)
+         SELECT numero_radicado, ? FROM radicados WHERE destino_todas_dependencias = 1`,
+        [dependenciaId]
+    );
+    const [asignaciones] = await connection.execute(
+        `SELECT rd.id, rd.numero_radicado, rd.dependencia_id, d.nombre
+         FROM radicado_dependencias rd
+         JOIN dependencias d ON d.id = rd.dependencia_id
+         WHERE rd.dependencia_id = ? AND rd.numero_radicado IN (
+             SELECT numero_radicado FROM radicados WHERE destino_todas_dependencias = 1
+         )`,
+        [dependenciaId]
+    );
+    const numerosPendientes = new Set(pendientes.map(({ numero_radicado }) => numero_radicado));
+    for (const asignacion of asignaciones) {
+        if (!numerosPendientes.has(asignacion.numero_radicado)) continue;
+        await registrarEventoRadicado(connection, req, {
+            numeroRadicado: asignacion.numero_radicado,
+            tipo: 'radicado_asignado',
+            dependenciaId: asignacion.dependencia_id,
+            dependenciaNombre: asignacion.nombre,
+            radicadoDependenciaId: asignacion.id,
+            valorNuevo: asignacion.nombre,
+            motivo: 'Radicado global asignado a nueva dependencia activa.'
+        });
     }
 }
 
@@ -260,11 +307,7 @@ router.post('/dependencias', autenticar, permitirRoles('administrador'), async (
         connection = await pool.getConnection();
         await connection.beginTransaction();
         const [result] = await connection.execute('INSERT INTO dependencias (nombre) VALUES (?)', [nombre]);
-        await connection.execute(
-            `INSERT IGNORE INTO radicado_dependencias (numero_radicado, dependencia_id)
-             SELECT numero_radicado, ? FROM radicados WHERE destino_todas_dependencias = 1`,
-            [result.insertId]
-        );
+        await asignarDependenciaARadicadosGlobales(connection, req, result.insertId);
         await connection.commit();
         res.status(201).json({ success: true, dependencia: { id: result.insertId, nombre, activo: 1 } });
     } catch (error) {
@@ -319,11 +362,7 @@ router.patch('/dependencias/:id/estado', autenticar, permitirRoles('administrado
             return errorHTTP(res, 404, 'Dependencia no encontrada.');
         }
         if (activo === 1) {
-            await connection.execute(
-                `INSERT IGNORE INTO radicado_dependencias (numero_radicado, dependencia_id)
-                 SELECT numero_radicado, ? FROM radicados WHERE destino_todas_dependencias = 1`,
-                [id]
-            );
+            await asignarDependenciaARadicadosGlobales(connection, req, id);
         }
         await connection.commit();
         res.json({

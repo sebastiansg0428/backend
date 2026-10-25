@@ -48,7 +48,7 @@ test('PUT estado admite estados intermedios sin fabricar respuestas', async t =>
         async rollback() { rollbacks++; },
         release() {},
         async execute(sql, values) {
-            if (sql.includes('SELECT estado, destino_todas_dependencias, requiere_respuesta FROM radicados')) {
+            if (sql.includes('SELECT estado, destino_todas_dependencias, requiere_respuesta')) {
                 if (values.length > 1) {
                     assert.match(sql, /radicados\.dependencia_destino_id = \?/);
                     assert.match(sql, /EXISTS \(/);
@@ -120,8 +120,9 @@ test('PUT estado admite estados intermedios sin fabricar respuestas', async t =>
     assert.equal(commits, 3);
     assert.equal(rollbacks, 0);
     assert.equal(historial.length, 3);
-    assert.equal(historial[0][1], 'Recibido');
+    assert.equal(historial[0][1], 'estado_cambiado');
     assert.equal(historial[0][2], 'Recibido');
+    assert.equal(historial[0][3], 'Recibido');
     const propia = await fetch(url, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tokenFuncionario}` },
@@ -130,7 +131,7 @@ test('PUT estado admite estados intermedios sin fabricar respuestas', async t =>
     assert.equal(propia.status, 200);
     assert.notEqual((await propia.json()).semaforo.nivel, 'completado');
     assert.equal(commits, 4);
-    assert.equal(historial[3][3], String(funcionario.id));
+    assert.equal(historial[3][4], String(funcionario.id));
     const manual = await fetch(url, {
         method: 'PUT', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({ estado: 'Respondido' })
@@ -154,12 +155,16 @@ test('PUT de un radicado global solo actualiza la asignación de la dependencia 
     const connection = {
         async beginTransaction() {}, async commit() {}, async rollback() {}, release() {},
         async execute(sql, values) {
-            if (sql.includes('SELECT estado, destino_todas_dependencias, requiere_respuesta FROM radicados')) {
+            if (sql.includes('SELECT estado, destino_todas_dependencias, requiere_respuesta')) {
                 assert.deepEqual(values, ['RAD-GLOBAL', 7, 7]);
                 return [[{ estado: 'Respondido', destino_todas_dependencias: 1 }]];
             }
-            if (sql.includes('SELECT id, estado FROM radicado_dependencias'))
-                return [[{ id: 501, estado: estadoDependencia }]];
+            if (sql.includes('SELECT rd.id, rd.estado, rd.dependencia_id')) {
+                return [[{
+                    id: 501, estado: estadoDependencia, dependencia_id: 7,
+                    dependencia_nombre: 'Talento Humano'
+                }]];
+            }
             if (sql.includes('UPDATE radicado_dependencias')) {
                 estadoDependencia = values[0];
                 escrituras.push(sql);

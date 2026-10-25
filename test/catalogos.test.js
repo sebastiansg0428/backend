@@ -37,6 +37,7 @@ test('administrador gestiona catalogos con baja logica y conserva permisos, refe
     const duplicado = () => { throw Object.assign(new Error('Duplicado'), { code: 'ER_DUP_ENTRY' }); };
     const ejecutar = async (sql, valores = []) => {
         consultas.push({ sql, valores });
+        if (sql.includes('SELECT r.numero_radicado FROM radicados r')) return [[]];
         if (sql.includes('FROM usuarios u')) {
             const usuario = usuarios.find(u => u.id === valores[0]);
             return [usuario ? [{ ...usuario, dependencia_nombre: dependencias.find(d => d.id === usuario.dependencia_id)?.nombre }] : []];

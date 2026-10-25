@@ -66,6 +66,7 @@ test('valida la estructura PDF en radicacion y respuestas sin alterar el almacen
             async rollback() {},
             release() {},
             async execute(sql, valores) {
+                if (sql.includes('SELECT rd.id, rd.dependencia_id, d.nombre')) return [[]];
                 if (sql.includes('SELECT ultimo_numero')) return [[{ ultimo_numero: 0 }]];
                 if (sql.includes('SELECT 1 FROM radicados')) return [[]];
                 if (sql.includes('SELECT r.estado')) return [[{

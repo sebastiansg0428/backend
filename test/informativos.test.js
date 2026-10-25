@@ -28,10 +28,13 @@ test('Enterado cierra solo informativos, por destino, con fecha y auditoría sin
                 return [[{ estado: global ? 'Recibido' : estado,
                     destino_todas_dependencias: Number(global), requiere_respuesta: regla }]];
             }
-            if (sql.includes('SELECT id, estado FROM radicado_dependencias')) {
+            if (sql.includes('SELECT rd.id, rd.estado, rd.dependencia_id')) {
                 assert.match(sql, /FOR UPDATE/);
                 assert.deepEqual(valores, ['RAD-INFO', 3]);
-                return [[{ id: 50, estado }]];
+                return [[{
+                    id: 50, estado, dependencia_id: 3,
+                    dependencia_nombre: 'Talento Humano'
+                }]];
             }
             if (sql.includes('UPDATE radicados') || sql.includes('UPDATE radicado_dependencias')) {
                 estado = valores[0];
@@ -74,7 +77,8 @@ test('Enterado cierra solo informativos, por destino, con fecha y auditoría sin
         assert.equal(datos.fecha_respuesta, null);
         assert.equal(datos.semaforo.texto, 'Enterado');
         assert.ok(escrituras.some(e => e.sql.includes('historial_radicado') &&
-            e.valores[2] === 'Enterado' && e.valores[3] === String(usuario.id)));
+            e.valores[1] === 'estado_cambiado' && e.valores[3] === 'Enterado' &&
+            e.valores[4] === String(usuario.id)));
         if (global) assert.equal(escrituras.some(e => e.sql.includes('UPDATE radicados')), false);
         const antes = escrituras.length;
         assert.equal((await pedir('Recibido')).status, 409);

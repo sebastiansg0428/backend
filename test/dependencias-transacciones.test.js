@@ -46,6 +46,9 @@ test('creacion y cambios de estado de dependencias son atomicos', async t => {
                         },
                         async execute(sql, valores) {
                             assert.equal(abierta, true);
+                            if (sql.includes('SELECT r.numero_radicado FROM radicados r')) {
+                                return [[{ numero_radicado: 'RAD-GLOBAL' }]];
+                            }
                             if (sql.startsWith('INSERT INTO dependencias')) {
                                 eventos.push('dependencia');
                                 if (escenario === 'duplicado') {
@@ -61,15 +64,27 @@ test('creacion y cambios de estado de dependencias son atomicos', async t => {
                                 dependencias[0].activo = valores[0];
                                 return [{ affectedRows: 1 }];
                             }
-                            assert.match(sql, /^INSERT IGNORE INTO radicado_dependencias/);
-                            assert.match(sql, /WHERE destino_todas_dependencias = 1/);
-                            eventos.push('asignacion');
-                            assert.deepEqual(valores, [operacion === 'crear' ? 3 : 2]);
-                            seguimientos.push({ numero_radicado: 'RAD-GLOBAL', dependencia_id: valores[0] });
-                            if (['asignacion', 'rollback'].includes(escenario)) {
-                                throw new Error('Fallo al asignar seguimientos');
+                            if (sql.startsWith('INSERT IGNORE INTO radicado_dependencias')) {
+                                assert.match(sql, /WHERE destino_todas_dependencias = 1/);
+                                eventos.push('asignacion');
+                                assert.deepEqual(valores, [operacion === 'crear' ? 3 : 2]);
+                                seguimientos.push({ numero_radicado: 'RAD-GLOBAL', dependencia_id: valores[0] });
+                                if (['asignacion', 'rollback'].includes(escenario)) {
+                                    throw new Error('Fallo al asignar seguimientos');
+                                }
+                                return [{ affectedRows: 1 }];
                             }
-                            return [{ affectedRows: 1 }];
+                            if (sql.includes('SELECT rd.id, rd.numero_radicado')) {
+                                return [[{
+                                    id: 100, numero_radicado: 'RAD-GLOBAL',
+                                    dependencia_id: valores[0], nombre: 'Planeacion'
+                                }]];
+                            }
+                            if (sql.includes('INSERT INTO historial_radicado')) {
+                                eventos.push('audit');
+                                return [{ affectedRows: 1 }];
+                            }
+                            throw new Error(`Consulta inesperada: ${sql}`);
                         },
                         async commit() {
                             eventos.push('commit');
@@ -103,7 +118,7 @@ test('creacion y cambios de estado de dependencias son atomicos', async t => {
                     assert.equal(resultado.success, true);
                     assert.deepEqual(eventos, [
                         'conexion', 'inicio', 'dependencia',
-                        ...(operacion === 'inactivar' ? [] : ['asignacion']), 'commit', 'release'
+                        ...(operacion === 'inactivar' ? [] : ['asignacion', 'audit']), 'commit', 'release'
                     ]);
                     if (operacion === 'crear') {
                         assert.deepEqual(resultado.dependencia, { id: 3, nombre: 'Nueva dependencia', activo: 1 });

@@ -218,6 +218,90 @@ reversion real de MySQL.
 
 ## Validacion de integracion MySQL local
 
+### Sembrar 100 radicados en desarrollo
+
+`scripts\sembrar-radicados.js` inserta exactamente 100 registros ficticios en
+`ventanilla_unica`, todos en Oficina de Planeacion. Requiere `DB_NAME` explicito
+y confirmacion de escritura; no permite otras bases. Reutiliza un usuario activo
+de Ventanilla y un tramite activo con termino vigente, sin crear cuentas ni
+modificar catalogos. Cada registro tiene snapshot de plazo, comunicacion externa
+y tres eventos identificados como seeding automatizado, sin sesion humana ni IP.
+
+```powershell
+$env:DB_NAME = 'ventanilla_unica'
+node scripts\sembrar-radicados.js --inspeccionar --lote=SEED-mi-prueba
+node scripts\sembrar-radicados.js --confirmar-desarrollo --lote=SEED-mi-prueba
+```
+
+Omitir `--lote` genera uno exclusivo. Anota el prefijo antes de escribir.
+El mismo lote se rechaza si ya existe; un prefijo distinto agrega otros 100.
+No reintentar automaticamente un commit cuyo resultado sea incierto.
+La transaccion valida los conteos y revierte errores previos al commit.
+No consume ni actualiza `secuencias_radicado`; los AUTO_INCREMENT si avanzan.
+No borra registros previos ni limpia el lote al terminar.
+
+Estos datos NO tienen PDFs ni respuestas: es una excepcion deliberada del
+script de pruebas, no del formulario normal que sigue exigiendo documentos.
+Los remitentes/asuntos estan marcados como ficticios y los correos usan
+`example.test`; no se envia ningun correo. Para ver cuatro paginas de 25 busca
+el prefijo del lote en Consulta, con Administrador, Ventanilla o el funcionario
+de Planeacion, sin otros filtros. Registros previos pueden agregar paginas
+si no filtras. Pruebas del script: `node --test test\seeding.test.js`.
+
+### Consulta y alertas paginadas
+
+La interfaz React solicita `GET /api/radicados?pagina=1&limite=25`. La API acepta
+`pagina` (1-1.000.000), `limite` (1-100; por defecto 25), `busqueda` (hasta 150
+caracteres), `hoy=0|1`, `criticos=0|1` y `tipo_comunicacion`
+(`interna`, `externa`, `sin-tipo` o vacio).
+La busqueda es literal, insensible a mayusculas y acentos con la intercalacion
+`utf8mb4_unicode_ci`; `%` y `_` no son comodines. Busca numero, nombre, documento
+y NIT, sin buscar dentro del texto de los PDFs.
+
+Devuelve `radicados`, `total` filtrado, `pagina`, `limite`, `paginas`, `has_more`
+y `resumen: { total, hoy, criticos }` de todo el conjunto autorizado.
+Los totales cuentan filas de seguimiento: un global puede aparecer una vez por
+dependencia para administracion/ventanilla, no es un conteo de expedientes unicos.
+Las paginas se ordenan por recepcion (creacion como respaldo), numero y
+asignacion descendentes. Cada solicitud usa una transaccion de lectura con
+snapshot consistente; nuevas escrituras entre solicitudes pueden mover filas
+entre paginas. Una pagina fuera de rango devuelve lista vacia con totales reales.
+
+`GET /api/alertas?dependencia_id=ID&pagina=1&limite=25` requiere un ID positivo
+y devuelve `alertas`, los mismos campos de paginacion y los totales
+`por_vencer`/`vencidos`. Un funcionario no puede elegir otra dependencia.
+Sin `pagina`, ambas rutas conservan el contrato legacy sin limite; clientes
+antiguos deben migrar al contrato paginado para obtener la mejora.
+
+Solo se descargan los detalles de la pagina. Para contadores y alertas se
+preseleccionan registros sin respuesta y plazos potencialmente criticos;
+se revisan en lotes de 250 sin cargar todos los asuntos/adjuntos en memoria.
+El motor existente de semaforo decide el resultado final, incluyendo festivos,
+ampliaciones y registros legacy sin snapshot completo. No se reduce auditoria,
+se altera el plazo ni se agrega cache con resultados potencialmente obsoletos.
+Los contadores y candidatos todavia requieren lecturas del conjunto autorizado:
+la paginacion no elimina todo el coste de crecimiento.
+No requiere una nueva migracion ni cambia estados o permisos de documentos.
+
+Validaciones especificas (datos ficticios, nunca base principal):
+
+```powershell
+node --test test\consulta-paginada.test.js
+$env:DB_NAME = 'ventanilla_unica_test'
+node scripts\medir-consulta.js
+$env:TEST_CONSULTA_MYSQL = '1'
+node --test test\consulta-mysql.test.js
+Remove-Item Env:TEST_CONSULTA_MYSQL
+```
+
+La medicion solo lee: compara consulta completa y paginada, p50/p95, bytes y
+EXPLAIN, con 10 muestras por rol disponible. No prepara ni modifica datos.
+La prueba MySQL crea fixtures con prefijo aleatorio y los elimina junto con sus
+PDFs y usuarios; preserva registros previos y secuencias de radicado, aunque los
+AUTO_INCREMENT pueden avanzar. Prueba HTTP, MySQL, documentos, respuesta,
+Enterado y globales; no sustituye una prueba del navegador contra el backend real.
+Se omite por defecto. Ejecutala por separado, no junto a la suite que simula SQL.
+
 Haz la validacion en una base separada, por ejemplo `ventanilla_unica_test`, y
 usa exclusivamente datos ficticios. Para prepararla desde cero, sigue la
 secuencia 000-020 de la seccion de instalacion nueva. Tambien puedes importar

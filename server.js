@@ -13,6 +13,8 @@ const { agregarDias, obtenerFechaLocal } = require('./semaforo');
 const { normalizarTexto, obtenerTiempoRespuesta } = require('./plazos');
 const { obtenerEstadoEditable, requiereRespuesta, esEstadoFinal } = require('./estados');
 const { clasificarTipoTramite } = require('./comunicaciones');
+const { opcionesConsulta, consultarPagina } = require('./consulta-radicados');
+const { presentarRadicado } = require('./presentacion-radicado');
 const {
     router: authRouter, autenticar, permitirRoles, filtroDependencia, autorizarRadicado
 } = require('./auth');
@@ -288,51 +290,6 @@ function esFechaISO(fecha) {
     } catch {
         return false;
     }
-}
-
-function presentarRadicado(radicado) {
-    const {
-        termino_fecha_recepcion,
-        termino_dias,
-        termino_tipo_dias,
-        termino_fundamento,
-        termino_fecha_limite_inicial,
-        termino_fecha_limite_actual,
-        termino_fecha_respuesta,
-        termino_nombre_tramite,
-        termino_codigo_tramite,
-        seguimiento_estado,
-        seguimiento_fecha_respuesta,
-        seguimiento_fecha_enterado,
-        ...datos
-    } = radicado;
-    const radicadoConTermino = {
-        ...datos,
-        estado: seguimiento_estado || datos.estado,
-        fecha_enterado: datos.destino_todas_dependencias
-            ? seguimiento_fecha_enterado : datos.fecha_enterado,
-        fecha_recepcion: termino_fecha_recepcion || datos.fecha_creacion,
-        termino_dias_aplicado: termino_dias,
-        tipo_dias_aplicado: termino_tipo_dias,
-        fundamento_legal_aplicado: termino_fundamento,
-        fecha_limite_inicial: termino_fecha_limite_inicial,
-        fecha_limite_actual: termino_fecha_limite_actual,
-        fecha_respuesta: datos.destino_todas_dependencias
-            ? seguimiento_fecha_respuesta
-            : termino_fecha_respuesta,
-        tipo_tramite: termino_nombre_tramite || null,
-        tipo_tramite_codigo: termino_codigo_tramite || null
-    };
-    if (termino_dias && termino_tipo_dias) {
-        radicadoConTermino.tiempo_de_respuesta = obtenerTiempoRespuesta({
-            dias: termino_dias,
-            tipo_dias: termino_tipo_dias
-        });
-    }
-    return {
-        ...radicadoConTermino,
-        semaforo: calcularSemaforoBackend(radicadoConTermino)
-    };
 }
 
 // Ruta POST principal para registrar el radicado
@@ -1000,6 +957,21 @@ app.post('/api/terminos-legales', protegerAdministracion, async (req, res) => {
 
 // Ruta para obtener los radicados con el semáforo calculado
 app.get('/api/radicados', async (req, res) => {
+    if (req.query.pagina !== undefined) {
+        let opciones;
+        try {
+            opciones = opcionesConsulta(req.query);
+        } catch (error) {
+            if (!(error instanceof TypeError)) throw error;
+            return responderError(res, 400, error.message);
+        }
+        try {
+            return res.json(await consultarPagina(pool, req.usuario, opciones));
+        } catch (error) {
+            console.error('Error al consultar pagina de radicados:', error);
+            return responderError(res, 500, 'Error interno al obtener los radicados.');
+        }
+    }
     const claseSolicitada = req.query.tipo_comunicacion;
     if (claseSolicitada !== undefined &&
         (typeof claseSolicitada !== 'string' ||
@@ -1067,6 +1039,29 @@ app.get('/api/radicados', async (req, res) => {
 });
 
 app.get('/api/alertas', async (req, res) => {
+    if (req.query.pagina !== undefined) {
+        let opciones;
+        const dependenciaId = Number(req.query.dependencia_id);
+        try {
+            opciones = opcionesConsulta(req.query);
+            if (typeof req.query.dependencia_id !== 'string' ||
+                !/^[1-9]\d*$/.test(req.query.dependencia_id) || !Number.isSafeInteger(dependenciaId)) {
+                throw new TypeError('dependencia_id debe ser un entero positivo.');
+            }
+        } catch (error) {
+            if (!(error instanceof TypeError)) throw error;
+            return responderError(res, 400, error.message);
+        }
+        if (req.usuario.rol === 'funcionario' && dependenciaId !== req.usuario.dependencia_id) {
+            return responderError(res, 403, 'Solo puedes consultar alertas de tu dependencia.');
+        }
+        try {
+            return res.json(await consultarPagina(pool, req.usuario, opciones, dependenciaId, true));
+        } catch (error) {
+            console.error('Error al consultar pagina de alertas:', error);
+            return responderError(res, 500, 'Error interno al consultar alertas.');
+        }
+    }
     try {
         const filtro = filtroDependencia(req.usuario);
         const esFuncionario = req.usuario.rol === 'funcionario';

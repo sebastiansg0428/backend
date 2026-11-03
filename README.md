@@ -672,6 +672,47 @@ la validacion del orden y plan de ejecucion en un MySQL aislado sigue pendiente.
 
 ### Trazabilidad y auditoria de radicados
 
+#### Medicion opt-in en base aislada
+
+`scripts\medir-audit-log.js` se niega a conectar si `DB_NAME` no es exactamente
+`ventanilla_unica_test`. No importa el pool productivo, no aplica migraciones,
+no cambia indices ni elimina datos. Usa una conexion y consultas preparadas.
+
+```powershell
+$env:DB_NAME = 'ventanilla_unica_test'
+# Configura DB_HOST, DB_USER y DB_PASSWORD para tu entorno sin versionar secretos.
+node .\scripts\medir-audit-log.js --inspeccionar
+# Solo si la inspeccion no reporta faltantes:
+node .\scripts\medir-audit-log.js --ejecutar
+```
+
+La inspeccion verifica el destino efectivo, tablas InnoDB, columnas de auditoria
+y campos actuales de radicados, indices de 021, triggers y referencias externas.
+Si falta estructura, detente y revisa las migraciones pendientes de la base test;
+no ejecutes toda la secuencia ni un ALTER repetido sin comprobar antes.
+
+La carga conserva 1.000 y luego 10.000 radicados **acumulados**, con 10 eventos
+sinteticos por radicado, mas un expediente adicional con 60 eventos para probar
+paginacion. Imprime un prefijo `CARGA-<UUID>` para localizar exclusivamente sus
+filas. No son tramites reales; no crea usuarios autenticables, PDFs ni modifica
+las secuencias oficiales. Cada radicado y sus eventos se confirman juntos.
+Si falla, conserva lo confirmado e imprime error; no reanuda automaticamente.
+Otra ejecucion usa un prefijo nuevo y agrega datos, no reemplaza los anteriores.
+
+Mide transacciones de radicado+10 eventos y lecturas con 5 calentamientos y 50
+muestras por escenario: primera pagina, cursor y expediente inexistente. Entrega
+promedio, p50, p95, maximo y `EXPLAIN` de la proyeccion publica del endpoint.
+La segunda etapa mide sus 9.000 nuevas transacciones, con 10.000 radicados ya
+acumulados al medir lecturas. El tamano de information_schema es estimado e
+incluye toda la tabla, no solo el prefijo actual.
+
+Aunque sea otra base, comparte CPU/disco con el servidor principal. Ejecuta
+sin otras tareas pesadas. Es una medicion SQL secuencial con cache caliente,
+no una prueba de usuarios concurrentes ni del flujo HTTP completo, y no establece
+un SLA ni permite extrapolar linealmente a volumen productivo.
+Las pruebas unitarias del script usan dobles y no conectan a MySQL:
+`node --test test\audit-log-carga.test.js`.
+
 La migracion 021 amplia `historial_radicado`; no renombra ni elimina columnas
 ni reescribe las filas historicas. Los nuevos eventos de radicacion, asignacion,
 adjuntos, cambios de estado, respuestas y ampliaciones se insertan dentro de la

@@ -25,7 +25,7 @@ con una conexión nueva y despliega frontend/backend juntos; reinicia el backend
 Las nuevas internas exigen origen activo y las externas tipo de persona/correo;
 las jurídicas exigen además razón social/NIT. No cambia el acceso por destino.
 
-La secuencia completa para instalaciones nuevas es 000-020, incluyendo los
+La secuencia completa para instalaciones nuevas es 000-022, incluyendo los
 pasos JavaScript 002, 009 y 020 en su posición; consulta el
 [README principal](../README.md). No reapliques esa secuencia a una base existente.
 La validación estática de migraciones no equivale a ejecutar toda la instalación
@@ -53,3 +53,18 @@ verifica el esquema con una conexion nueva y resuelve el paso incompleto.
 Comprueba columnas, restricciones, nulabilidad y conservacion de registros.
 La migracion aborta si detecta las nuevas columnas ya existentes. Reinicia el
 backend y publica el frontend compatible antes de reabrir las escrituras.
+
+## Reintentos de radicacion (022)
+
+Despues de 021, ejecuta una sola vez
+[022_idempotencia_radicacion.sql](022_idempotencia_radicacion.sql).
+Agrega la tabla InnoDB `intentos_radicacion`, con clave unica por actor/UUID,
+huella del formulario/PDFs y resultado JSON confirmado atomicamente.
+No modifica expedientes anteriores. No se aplica al iniciar el backend.
+Si la tabla ya existe, verifica su estructura; no reejecutes el DDL a ciegas.
+Reinicia el backend y actualiza el frontend compatible.
+
+Conserva esta tabla junto con radicados, secuencias y PDFs al respaldar:
+los reintentos despues de un reinicio necesitan su resultado original.
+No tiene purga automatica. El procedimiento de recuperacion ficticia aislada
+esta en el [README principal](../README.md).

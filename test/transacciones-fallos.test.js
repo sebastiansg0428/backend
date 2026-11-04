@@ -159,7 +159,9 @@ test('rutas activas preservan limpieza y conexiones ante fallos transaccionales'
                     assert.equal(eventos.filter(e => e === 'release').length, 1);
                     assert.equal(eventos.filter(e => e === 'rollback').length, escenario === 'exito' ? 0 : 1);
                 }
-                if (escenario !== 'exito') {
+                if (escenario === 'commit' && ruta.nombre.startsWith('radicacion')) {
+                    for (const archivo of archivos) await fs.access(archivo);
+                } else if (escenario !== 'exito') {
                     for (const archivo of archivos) await assert.rejects(fs.access(archivo), { code: 'ENOENT' });
                 }
             });

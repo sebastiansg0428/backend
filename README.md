@@ -52,6 +52,7 @@ este orden, deteniendote si un paso falla:
 | 019 | [019_procedencia_radicados.sql](migrations/019_procedencia_radicados.sql) |
 | 020 | `node migrations\020_informativos_sin_respuesta.js` |
 | 021 | [021_audit_log_radicados.sql](migrations/021_audit_log_radicados.sql) |
+| 022 | [022_idempotencia_radicacion.sql](migrations/022_idempotencia_radicacion.sql) |
 
 Las migraciones SQL no son todas idempotentes y los cambios DDL pueden quedar
 confirmados aunque un paso posterior falle: no vuelvas a importar toda la
@@ -68,6 +69,79 @@ Actualmente no hay un registro automatico de migraciones aplicadas.
 
 La migracion 021 es incremental y debe aplicarse una sola vez, despues de 020.
 No se conecta ni se ejecuta automaticamente al iniciar el servidor.
+
+## Reintentos seguros de radicacion
+
+Aplica una sola vez [022_idempotencia_radicacion.sql](migrations/022_idempotencia_radicacion.sql)
+despues de 021 y reinicia el backend. Agrega `intentos_radicacion` sin modificar
+radicados, secuencias, usuarios ni documentos existentes.
+
+`POST /api/radicados` admite `Idempotency-Key` (UUID v4). React crea una clave
+por intento y conserva en memoria el formulario y los PDFs originales.
+La clave pertenece al actor autenticado: el mismo actor, clave y payload
+devuelven el JSON confirmado original, incluso tras reiniciar el backend.
+Los campos, nombres, bytes y orden de los PDFs forman la huella SHA-256;
+reutilizar la clave con otros datos devuelve 409. Claves distintas pueden
+representar solicitudes legitimas con el mismo asunto/remitente.
+La reserva, el consecutivo, los documentos, los eventos y la respuesta del
+intento se confirman en una misma transaccion. Los envios concurrentes de
+una misma clave esperan la reserva y no consumen varios consecutivos.
+
+Si se pierde la confirmacion o llega un 5xx, reintenta la misma clave; no
+generes otra. Si el resultado del commit es incierto se conservan los PDFs
+potencialmente confirmados, en lugar de borrar archivos de un radicado
+persistido. Esto puede dejar archivos huerfanos tras un fallo: su eliminacion
+requiere conciliacion con MySQL, no borrado indiscriminado. Los replays
+confirmados eliminan sus uploads temporales nuevos.
+Clientes legados sin este encabezado siguen funcionando, **sin proteccion
+contra duplicados por reintentos**. No hay expiracion ni purga automatica de
+intentos; no borres esta tabla por separado del respaldo de expedientes.
+
+## Prueba aislada de respaldo y restauracion
+
+La herramienta [probar-recuperacion.js](scripts/probar-recuperacion.js) crea
+dos bases nuevas `ventanilla_recuperacion_<12hex>_origen/destino` y carpetas
+exclusivas fuera del repositorio. Nunca restaura sobre una base existente ni
+borra las bases al finalizar. Usa solo **estructura** de `ventanilla_unica`
+(`RECOVERY_SCHEMA_DB` permite elegir `ventanilla_unica_test` si su esquema es
+compatible); no copia ciudadanos, usuarios ni PDFs de esas bases. Inserta
+cuentas, catalogos y tres radicados ficticios con tres PDFs originales y uno
+de respuesta, usando la API y los permisos reales.
+
+Configura `DB_HOST`, `DB_USER`, `DB_PASSWORD` como en el backend y
+`MARIADB_BIN` con una carpeta absoluta que contenga `mariadb-dump` y `mariadb`.
+Ejemplo PowerShell (elige una carpeta de pruebas fuera de Git):
+
+```powershell
+$env:MARIADB_BIN = 'C:\Program Files\MariaDB 11.8\bin'
+node scripts\probar-recuperacion.js C:\RespaldosPruebaVentanilla
+```
+
+Requiere permisos para crear las dos bases y utilidades nativas compatibles.
+Las credenciales nativas van en un archivo temporal, nunca en argumentos;
+en Windows se protege su carpeta con ACL del usuario actual y se elimina al
+terminar. Si la proteccion falla, la prueba se detiene.
+
+El worker termina antes de respaldar SQL (`--single-transaction`) y PDFs:
+no quedan escritores activos entre ambas copias. El manifest registra hashes,
+tamanos, filas por tabla y autoincrementos. La restauracion verifica todos los
+datos, secuencias, intentos, 15 FKs del esquema actual y hashes de archivos;
+ademas prueba replay tras reinicio/restauracion y descargas por dependencia.
+La prueba envia 12 solicitudes concurrentes del mismo intento (superando el
+pool de 10 conexiones), compara sus 12 respuestas y exige un solo radicado y
+un solo consecutivo antes de crear los otros dos expedientes ficticios.
+El reporte conserva estas cantidades como evidencia de concurrencia.
+El dump nativo usa su gestion estandar de FKs durante la importacion; la
+verificacion explicita posterior rechaza referencias huerfanas.
+`reporte.json` solo se escribe cuando todas las comprobaciones pasan; ante
+error el proceso devuelve codigo distinto de cero y conserva la carpeta
+parcial para diagnostico, sin anunciar una restauracion valida.
+
+`UPLOAD_DIR` permite separar el almacenamiento del backend de pruebas;
+normalmente sigue usando `uploads` del repositorio. No lo cambies en desarrollo
+sin trasladar y verificar los archivos ya referenciados en MySQL.
+Esta prueba valida recuperacion **ficticia**, no reemplaza un procedimiento
+operativo de respaldos de expedientes reales.
 
 ### Alcance de la validacion del esquema
 

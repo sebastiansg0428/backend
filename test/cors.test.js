@@ -33,13 +33,14 @@ test('CORS local permite ambos frontends, rechaza otros origenes y conserva aute
         const preflight = await fetch(url, {
             method: 'OPTIONS', headers: {
                 Origin: origen, 'Access-Control-Request-Method': 'POST',
-                'Access-Control-Request-Headers': 'authorization,content-type'
+                'Access-Control-Request-Headers': 'authorization,content-type,idempotency-key'
             }
         });
         assert.equal(preflight.status, 204);
         assert.equal(preflight.headers.get('access-control-allow-origin'), origen);
         assert.match(preflight.headers.get('vary'), /Origin/);
         assert.match(preflight.headers.get('access-control-allow-headers'), /authorization/);
+        assert.match(preflight.headers.get('access-control-allow-headers'), /idempotency-key/);
         assert.equal(preflight.headers.get('access-control-allow-credentials'), null);
         const consulta = await fetch(url, { headers: { Origin: origen } });
         assert.equal(consulta.status, 401);

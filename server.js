@@ -15,6 +15,7 @@ const { obtenerEstadoEditable, requiereRespuesta, esEstadoFinal } = require('./e
 const { clasificarTipoTramite } = require('./comunicaciones');
 const { opcionesConsulta, consultarPagina } = require('./consulta-radicados');
 const { presentarRadicado } = require('./presentacion-radicado');
+const { validarClave, huellaSolicitud, buscarIntento, reservarIntento, confirmarIntento } = require('./idempotencia');
 const {
     router: authRouter, autenticar, permitirRoles, filtroDependencia, autorizarRadicado
 } = require('./auth');
@@ -28,7 +29,8 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 // Asegurar carpeta uploads
-const uploadDir = path.join(__dirname, 'uploads');
+const uploadDir = process.env.UPLOAD_DIR
+    ? path.resolve(process.env.UPLOAD_DIR) : path.join(__dirname, 'uploads');
 if (!fs.existsSync(uploadDir)) {
     fs.mkdirSync(uploadDir, { recursive: true });
 }
@@ -253,9 +255,9 @@ function eliminarArchivoSubido(archivo) {
 
 const protegerAdministracion = permitirRoles('administrador');
 
-async function obtenerTerminoVigente({ tipoTramiteId, tipoDocumento, fecha }) {
+async function obtenerTerminoVigente({ tipoTramiteId, tipoDocumento, fecha }, connection = pool) {
     const esIdNumerico = tipoTramiteId && Number.isInteger(Number(tipoTramiteId)) && Number(tipoTramiteId) >= 1;
-    const [tipos] = await pool.query(
+    const [tipos] = await connection.query(
         `SELECT t.id, t.codigo, t.nombre, t.categoria_general, t.requiere_respuesta, l.id AS termino_legal_id,
                 l.dias, l.tipo_dias, l.fundamento_legal
          FROM tipos_tramite AS t
@@ -293,7 +295,9 @@ function esFechaISO(fecha) {
 }
 
 // Ruta POST principal para registrar el radicado
-app.post('/api/radicados', permitirRoles('administrador', 'ventanilla'), recibirArchivosRadicacion, async (req, res) => {
+app.post('/api/radicados', permitirRoles('administrador', 'ventanilla'), validarClave, recibirArchivosRadicacion, async (req, res) => {
+    let commitIntentado = false;
+    let conexionIntento;
     try {
         const archivos = req.files || [];
         if (!archivos.length) {
@@ -306,6 +310,23 @@ app.post('/api/radicados', permitirRoles('administrador', 'ventanilla'), recibir
                 return responderError(res, 400, errorPdf);
             }
         }
+        const huella = req.claveRadicacion ? await huellaSolicitud(req) : null;
+        if (req.claveRadicacion) {
+            const confirmada = await buscarIntento(pool, req, huella);
+            if (confirmada) {
+                archivos.forEach(eliminarArchivoSubido);
+                return res.status(200).json(confirmada);
+            }
+            // Serializar antes de validar catalogos: un replay no depende de su vigencia actual.
+            conexionIntento = await pool.getConnection();
+            await conexionIntento.beginTransaction();
+            const concurrente = await reservarIntento(conexionIntento, req, huella);
+            if (concurrente) {
+                archivos.forEach(eliminarArchivoSubido);
+                return res.status(200).json(concurrente);
+            }
+        }
+        const consultaCatalogos = conexionIntento || pool;
 
         // Extracción limpia de los campos del formulario
         const {
@@ -376,7 +397,7 @@ app.post('/api/radicados', permitirRoles('administrador', 'ventanilla'), recibir
                 archivos.forEach(eliminarArchivoSubido);
                 return responderError(res, 400, 'El tipo de persona solo corresponde a comunicaciones externas.');
             }
-            const [origenes] = await pool.execute(
+            const [origenes] = await consultaCatalogos.execute(
                 'SELECT id, nombre FROM dependencias WHERE id = ? AND activo = 1',
                 [Number(dependencia_remitente_id)]
             );
@@ -437,10 +458,10 @@ app.post('/api/radicados', permitirRoles('administrador', 'ventanilla'), recibir
                 archivos.forEach(eliminarArchivoSubido);
                 return responderError(res, 400, 'dependencia_destino_id debe ser un entero positivo.');
             }
-            const [rows] = await pool.execute('SELECT id, nombre FROM dependencias WHERE id = ? AND activo = 1', [id]);
+            const [rows] = await consultaCatalogos.execute('SELECT id, nombre FROM dependencias WHERE id = ? AND activo = 1', [id]);
             dependencia = rows[0];
         } else if (typeof dependencia_destino === 'string' && dependencia_destino.trim()) {
-            const [rows] = await pool.execute(
+            const [rows] = await consultaCatalogos.execute(
                 'SELECT id, nombre FROM dependencias WHERE nombre = ? AND activo = 1',
                 [dependencia_destino.trim()]
             );
@@ -466,7 +487,7 @@ app.post('/api/radicados', permitirRoles('administrador', 'ventanilla'), recibir
             tipoTramiteId: tipo_tramite_id ? Number(tipo_tramite_id) : null,
             tipoDocumento: tipo_documento,
             fecha: fechaRecepcion
-        });
+        }, consultaCatalogos);
         if (!termino || (requiereRespuesta(termino) && !termino.termino_legal_id)) {
             archivos.forEach(eliminarArchivoSubido);
             return responderError(
@@ -487,10 +508,13 @@ app.post('/api/radicados', permitirRoles('administrador', 'ventanilla'), recibir
                     ?, ?, ?, ?, ?, ?, ?, ?)
         `;
 
-        let connection = await pool.getConnection();
+        let connection = conexionIntento || await pool.getConnection();
+        const intentoReservado = Boolean(conexionIntento);
+        conexionIntento = null;
         let numeroRadicado;
+        let respuestaConfirmada;
         try {
-            await connection.beginTransaction();
+            if (!intentoReservado) await connection.beginTransaction();
             const anoRadicacion = Number(fechaRecepcion.slice(0, 4));
             await connection.execute(
                 `INSERT INTO secuencias_radicado (ano, ultimo_numero)
@@ -647,6 +671,27 @@ app.post('/api/radicados', permitirRoles('administrador', 'ventanilla'), recibir
                     motivo: `Se adjuntaron ${archivos.length} documento(s) PDF al radicado.`
                 });
             }
+            respuestaConfirmada = {
+                success: true,
+                message: 'Radicado generado y guardado exitosamente.',
+                radicado: numeroRadicado,
+                usuario_recibe: req.usuario.nombre,
+                fecha_hora_recepcion: fechaHoraRecepcion,
+                fecha_hora_recepcion_legible: fechaHoraLegibleBogota(instanteRecepcion),
+                dependencia_destino: dependencia.nombre,
+                dependencia_remitente_id: dependenciaRemitente?.id ?? null,
+                dependencia_remitente: dependenciaRemitente?.nombre ?? null,
+                remitente_tipo_persona: tipoComunicacion === 'Externa' ? remitente_tipo_persona : null,
+                destino_todas_dependencias: destinoTodasDependencias,
+                requiere_respuesta: exigeRespuesta,
+                termino: exigeRespuesta ? {
+                    dias: termino.dias, tipo_dias: termino.tipo_dias,
+                    fundamento_legal: termino.fundamento_legal, fecha_limite: fechaLimite
+                } : null,
+                tipo_comunicacion: tipoComunicacion
+            };
+            if (req.claveRadicacion) await confirmarIntento(connection, req, respuestaConfirmada);
+            commitIntentado = true;
             await connection.commit();
         } catch (error) {
             ({ connection, error } = await revertirTrasError(connection, error));
@@ -657,34 +702,30 @@ app.post('/api/radicados', permitirRoles('administrador', 'ventanilla'), recibir
 
         console.log(`✅ Radicado ${numeroRadicado} guardado correctamente.`);
 
-        return res.status(200).json({
-            success: true,
-            message: 'Radicado generado y guardado exitosamente.',
-            radicado: numeroRadicado,
-            usuario_recibe: req.usuario.nombre,
-            fecha_hora_recepcion: fechaHoraRecepcion,
-            fecha_hora_recepcion_legible: fechaHoraLegibleBogota(instanteRecepcion),
-            dependencia_destino: dependencia.nombre,
-            dependencia_remitente_id: dependenciaRemitente?.id ?? null,
-            dependencia_remitente: dependenciaRemitente?.nombre ?? null,
-            remitente_tipo_persona: tipoComunicacion === 'Externa' ? remitente_tipo_persona : null,
-            destino_todas_dependencias: destinoTodasDependencias,
-            requiere_respuesta: exigeRespuesta,
-            termino: exigeRespuesta ? {
-                dias: termino.dias,
-                tipo_dias: termino.tipo_dias,
-                fundamento_legal: termino.fundamento_legal,
-                fecha_limite: fechaLimite
-            } : null,
-            tipo_comunicacion: tipoComunicacion
-        });
+        return res.status(200).json(respuestaConfirmada);
 
     } catch (error) {
+        if (conexionIntento) {
+            ({ connection: conexionIntento, error } = await revertirTrasError(conexionIntento, error));
+            if (conexionIntento) conexionIntento.release();
+            conexionIntento = null;
+        }
         console.error('❌ Error crítico al procesar el radicado:', error);
 
-        (req.files || []).forEach(eliminarArchivoSubido);
+        if (!commitIntentado) (req.files || []).forEach(eliminarArchivoSubido);
+        if (error.status === 409) return responderError(res, 409, error.message);
 
-        return responderError(res, 500, 'Error interno del servidor al guardar el registro.');
+        return responderError(res, 500, commitIntentado
+            ? 'No se pudo confirmar el resultado. Reintenta el mismo intento; no crees otro radicado.'
+            : error.code === 'ER_NO_SUCH_TABLE' && req.claveRadicacion
+                ? 'Falta aplicar la migracion 022 de idempotencia. Contacta al administrador.'
+                : 'Error interno del servidor al guardar el registro.');
+    } finally {
+        if (conexionIntento) {
+            const reversion = await revertirTrasError(conexionIntento, new Error('Intento sin inserciones nuevas.'));
+            if (reversion.connection) reversion.connection.release();
+            else console.error('No se pudo revertir la reserva del intento:', reversion.error);
+        }
     }
 });
 

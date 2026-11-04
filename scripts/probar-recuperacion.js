@@ -175,6 +175,8 @@ async function ejecutar() {
                 }
             }
         }
+        await connection.query(`USE \`${origen}\``);
+        await require('../migrations/024_integridad_referencial').migrarIntegridad(connection, { aplicar: true });
         const uploads = path.join(carpeta, 'origen-uploads');
         const fixture = path.join(carpeta, 'fixture.json');
         const envOrigen = { ...process.env, DB_NAME: origen, UPLOAD_DIR: uploads };

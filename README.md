@@ -54,6 +54,7 @@ este orden, deteniendote si un paso falla:
 | 021 | [021_audit_log_radicados.sql](migrations/021_audit_log_radicados.sql) |
 | 022 | [022_idempotencia_radicacion.sql](migrations/022_idempotencia_radicacion.sql) |
 | 023 | `node migrations\023_solicitudes_traslado.js` |
+| 024 | Verificar y aplicar explicitamente segun [integridad referencial](#integridad-referencial-y-unicidad-024) |
 
 Las migraciones SQL no son todas idempotentes y los cambios DDL pueden quedar
 confirmados aunque un paso posterior falle: no vuelvas a importar toda la
@@ -70,6 +71,87 @@ Actualmente no hay un registro automatico de migraciones aplicadas.
 
 La migracion 021 es incremental y debe aplicarse una sola vez, despues de 020.
 No se conecta ni se ejecuta automaticamente al iniciar el servidor.
+
+## Integridad referencial y unicidad (024)
+
+La [migracion 024](migrations/024_integridad_referencial.js) agrega **11 FK**
+en terminos, ampliaciones, historial, intentos y respuestas. Incluye referencias
+compuestas para que la asignacion pertenezca al mismo radicado (tambien en el
+historial) y para que el termino pertenezca al tipo de tramite correspondiente.
+Las nuevas referencias usan `ON DELETE RESTRICT ON UPDATE RESTRICT`.
+No borra ni rellena datos, no renombra campos y conserva nombres historicos y
+valores NULL legados. Usuarios y dependencias con referencias se desactivan;
+no se eliminan fisicamente.
+
+La columna generada `respuestas_radicado.numero_individual_unico` tiene UNIQUE
+y solo toma el numero cuando la asignacion es NULL. Impide duplicar respuestas
+individuales sin impedir que cada dependencia responda un global.
+`uq_respuesta_dependencia` y las FK/cascadas documentales anteriores se
+conservan. Las nuevas referencias RESTRICT pueden impedir un borrado incluso
+si otro camino tenia CASCADE: no autorizan un procedimiento de eliminacion
+documental ni sustituyen la retencion institucional.
+
+**No se ejecuta al arrancar el backend.** Preparar la migracion no significa
+que se haya aplicado a desarrollo. Antes de una aplicacion autorizada:
+
+1. Confirmar 000-023 y configurar la base correcta con `DB_NAME`.
+2. Respaldar estructura, datos y PDFs y verificar su restauracion.
+3. Detener escrituras y procesos que puedan modificar el esquema.
+4. Verificar sin aplicar DDL:
+
+```powershell
+node migrations\024_integridad_referencial.js --verificar
+```
+
+Informa `pendiente`/`aplicada`, numero de ALTER necesarios y `aplicada: false`
+cuando aun no esta migrada. La verificacion es solo lectura y puede recorrer
+tablas completas. Si encuentra huerfanos, duplicados o pares incompatibles,
+aborta antes del primer ALTER y muestra reglas/conteos, sin volcar datos
+personales. Cualquier correccion de filas requiere revision independiente.
+
+Solo con autorizacion de aplicacion, respaldo y escrituras detenidas:
+
+```powershell
+node migrations\024_integridad_referencial.js --aplicar
+node migrations\024_integridad_referencial.js --verificar
+```
+
+No ejecutar sin un argumento explicito. No desactiva `FOREIGN_KEY_CHECKS`;
+requiere claves activas e InnoDB. Conserva VARCHAR(50/100) historicos y valida
+tipos/signos y collations compatibles; no convierte el esquema a ciegas.
+Reutiliza indices compatibles. Un esquema completamente aplicado se verifica
+sin repetir DDL; uno parcial o incompatible se rechaza.
+
+**El DDL hace commit implicito:** no existe rollback global entre los ALTER.
+Un fallo informa cuantos ALTER terminaron y su causa. Inspeccionar desde una
+conexion nueva antes de continuar; no repetir comandos a ciegas ni quitar
+restricciones para forzar escrituras. Recuperar el respaldo verificado con
+el procedimiento aprobado si se requiere volver al estado anterior.
+
+Pruebas, cada MySQL en proceso separado:
+
+```powershell
+node --test test\integridad-migracion.test.js
+$env:TEST_INTEGRIDAD_MYSQL = '1'
+node --test test\integridad-mysql.test.js
+Remove-Item Env:\TEST_INTEGRIDAD_MYSQL
+$env:TEST_TRASLADOS_MYSQL = '1'
+node --test test\traslados-mysql.test.js
+Remove-Item Env:\TEST_TRASLADOS_MYSQL
+```
+
+Las pruebas nuevas copian **solo estructura**, crean bases
+`ventanilla_integridad_<12hex>` y las eliminan al terminar. Comprueban ambos
+anchos de numero, preservacion de filas, NULL validos, rechazo de datos
+incompatibles antes de DDL, fallo parcial, relectura, referencias y unicidad
+concurrente. Traslados tambien prueba HTTP de respuestas individuales y
+globales con 024. La prueba de recuperacion aplica/verifica 024 exclusivamente
+en su origen ficticio antes de generar datos.
+Validado con MariaDB 11.8.5; esto no certifica por si solo toda la matriz de
+versiones MySQL/MariaDB documentada para el proyecto.
+
+Esta etapa no agrega CHECK nuevos de estados/fechas, ni optimiza consultas,
+normaliza adjuntos o configura etiquetas/tooltips de phpMyAdmin.
 
 ## Traslados internos mediados por Ventanilla (023)
 
@@ -240,7 +322,7 @@ terminar. Si la proteccion falla, la prueba se detiene.
 El worker termina antes de respaldar SQL (`--single-transaction`) y PDFs:
 no quedan escritores activos entre ambas copias. El manifest registra hashes,
 tamanos, filas por tabla y autoincrementos. La restauracion verifica todos los
-datos, secuencias, intentos, 15 FKs del esquema actual y hashes de archivos;
+datos, secuencias, intentos, todas las FKs (32 con 023/024) y hashes de archivos;
 ademas prueba replay tras reinicio/restauracion y descargas por dependencia.
 La prueba envia 12 solicitudes concurrentes del mismo intento (superando el
 pool de 10 conexiones), compara sus 12 respuestas y exige un solo radicado y

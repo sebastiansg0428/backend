@@ -25,11 +25,29 @@ con una conexión nueva y despliega frontend/backend juntos; reinicia el backend
 Las nuevas internas exigen origen activo y las externas tipo de persona/correo;
 las jurídicas exigen además razón social/NIT. No cambia el acceso por destino.
 
-La secuencia completa para instalaciones nuevas es 000-022, incluyendo los
-pasos JavaScript 002, 009 y 020 en su posición; consulta el
+La secuencia completa para instalaciones nuevas es 000-024, incluyendo los
+pasos JavaScript 002, 009, 020, 023 y 024 en su posición; consulta el
 [README principal](../README.md). No reapliques esa secuencia a una base existente.
 La validación estática de migraciones no equivale a ejecutar toda la instalación
 en una base aislada.
+
+## Integridad referencial y unicidad (024)
+
+Despues de 023, [024_integridad_referencial.js](024_integridad_referencial.js)
+permite verificar con `--verificar` (solo lectura) o aplicar explicitamente con
+`--aplicar`. Preparar y probar el archivo no autoriza su aplicacion a desarrollo.
+Consulta el [procedimiento completo](../README.md#integridad-referencial-y-unicidad-024)
+antes de ejecutarlo: requiere respaldo restaurable y escrituras detenidas.
+
+Agrega FK RESTRICT y relaciones compuestas sin borrar datos ni snapshots.
+La unicidad de respuesta individual usa una columna generada para conservar
+las respuestas por asignacion de globales y los NULL validos de informativos.
+Reutiliza indices compatibles y no desactiva las FK.
+
+La prevalidacion rechaza incompatibilidades antes del primer ALTER. Un fallo
+posterior puede dejar DDL confirmado: inspeccionar desde otra conexion y
+recuperar el respaldo si corresponde; no reejecutar a ciegas. Solo un estado
+completo compatible se reconoce como ya aplicado. No hay rollback global.
 
 ## Informativos sin respuesta (020)
 

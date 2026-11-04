@@ -55,6 +55,7 @@ test('traslados HTTP/MySQL: permisos, concurrencia, reintentos y plazos en base 
     if (!tablas.some(tabla => tabla.nombre === 'solicitudes_traslado')) {
         await require('../migrations/023_solicitudes_traslado')(admin);
     }
+    await require('../migrations/024_integridad_referencial').migrarIntegridad(admin, { aplicar: true });
     process.env.DB_NAME = nombre;
     process.env.UPLOAD_DIR = uploads;
     pool = require('../db');
@@ -301,6 +302,23 @@ test('traslados HTTP/MySQL: permisos, concurrencia, reintentos y plazos en base 
         assert.equal((await pedir(2, `/api/traslados/${solicitud.id}/decision`, aprobar)).status, 200);
     });
 
+    await t.test('024 mantiene 409 concurrente individual y respuestas independientes globales', async () => {
+        const individual = await radicar();
+        const concurrentes = await Promise.all([responder(0, individual), responder(0, individual)]);
+        assert.deepEqual(concurrentes.map(r => r.status).sort(), [201, 409]);
+        const global = await radicar({ global: true });
+        for (const dependencia of dependencias.slice(0, 2)) {
+            await pool.execute('INSERT INTO radicado_dependencias(numero_radicado,dependencia_id) VALUES (?,?)', [global, dependencia]);
+        }
+        for (const actor of [0, 1]) {
+            const respuesta = await responder(actor, global);
+            assert.equal(respuesta.status, 201, await respuesta.clone().text());
+            assert.equal((await responder(actor, global)).status, 409);
+        }
+        const [[conteo]] = await pool.execute('SELECT COUNT(*) AS n FROM respuestas_radicado WHERE numero_radicado=?', [global]);
+        assert.equal(Number(conteo.n), 2);
+    });
+
     await t.test('bandejas de 25 y contador por origen sin acceso por destino historico', async () => {
         for (let i = 0; i < 27; i++) await solicitar(await radicar());
         const pagina1 = await (await pedir(0, '/api/traslados?estado=pendiente')).json();
@@ -312,6 +330,6 @@ test('traslados HTTP/MySQL: permisos, concurrencia, reintentos y plazos en base 
         assert.equal(ajenas.total, 0);
         assert.equal(ajenas.pendientes, 0);
         const [[version]] = await pool.query('SELECT VERSION() AS motor');
-        console.log(JSON.stringify({ motor: version.motor, baseFicticia: nombre, migracion023: true, carreras: 8, pagina: 25, limpieza: 'base y PDFs se eliminan al terminar' }));
+        console.log(JSON.stringify({ motor: version.motor, baseFicticia: nombre, migracion023: true, migracion024: true, carreras: 8, pagina: 25, limpieza: 'base y PDFs se eliminan al terminar' }));
     });
 });

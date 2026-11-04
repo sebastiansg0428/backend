@@ -16,6 +16,7 @@ const { clasificarTipoTramite } = require('./comunicaciones');
 const { opcionesConsulta, consultarPagina } = require('./consulta-radicados');
 const { presentarRadicado } = require('./presentacion-radicado');
 const { validarClave, huellaSolicitud, buscarIntento, reservarIntento, confirmarIntento } = require('./idempotencia');
+const { router: trasladosRouter, cancelarTrasladoPendiente } = require('./traslados');
 const {
     router: authRouter, autenticar, permitirRoles, filtroDependencia, autorizarRadicado
 } = require('./auth');
@@ -42,6 +43,7 @@ if (!fs.existsSync(uploadRespuestasDir)) {
 
 app.use('/api', authRouter);
 app.use('/api', autenticar);
+app.use('/api', trasladosRouter);
 
 app.use('/uploads', autenticar, async (req, res, next) => {
     try {
@@ -1544,6 +1546,7 @@ app.post(
                 await connection.rollback(); (req.files || []).forEach(eliminarArchivoSubido);
                 return responderError(res, 409, 'Este radicado ya fue respondido.');
             }
+            if (!idAsignacion) await cancelarTrasladoPendiente(connection, req, numeroRadicado);
             const [existente] = await connection.execute(
                 idAsignacion
                     ? 'SELECT id FROM respuestas_radicado WHERE radicado_dependencia_id = ? LIMIT 1'
@@ -1720,6 +1723,9 @@ app.put(
                 reversionIntentada = true;
                 await connection.rollback();
                 return responderError(res, 409, 'Este radicado requiere una respuesta institucional, no puede cerrarse como Enterado.');
+            }
+            if (!idAsignacion && estadoNuevo === 'Enterado') {
+                await cancelarTrasladoPendiente(connection, req, numero_radicado);
             }
             if (idAsignacion) {
                 await connection.execute(

@@ -97,7 +97,8 @@ test('rutas activas preservan limpieza y conexiones ante fallos transaccionales'
                             if (escenario.startsWith('negocio')) return [[]];
                             if (sql.includes('SELECT ultimo_numero')) return [[{ ultimo_numero: 0 }]];
                             if (sql.includes('UNION ALL') || sql.includes('SELECT id FROM respuestas_radicado') ||
-                                sql.includes('SELECT id FROM terminos_legales')) return [[]];
+                                sql.includes('SELECT id FROM terminos_legales') ||
+                                sql.includes('FROM solicitudes_traslado')) return [[]];
                             if (sql.includes('SELECT id FROM tipos_tramite')) return [[{ id: 1 }]];
                             if (sql.includes('SELECT r.estado') || sql.includes('SELECT estado,')) {
                                 return [[{ estado: 'Recibido', requiere_respuesta: 1, destino_todas_dependencias: 0 }]];

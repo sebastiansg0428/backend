@@ -53,6 +53,7 @@ este orden, deteniendote si un paso falla:
 | 020 | `node migrations\020_informativos_sin_respuesta.js` |
 | 021 | [021_audit_log_radicados.sql](migrations/021_audit_log_radicados.sql) |
 | 022 | [022_idempotencia_radicacion.sql](migrations/022_idempotencia_radicacion.sql) |
+| 023 | `node migrations\023_solicitudes_traslado.js` |
 
 Las migraciones SQL no son todas idempotentes y los cambios DDL pueden quedar
 confirmados aunque un paso posterior falle: no vuelvas a importar toda la
@@ -69,6 +70,120 @@ Actualmente no hay un registro automatico de migraciones aplicadas.
 
 La migracion 021 es incremental y debe aplicarse una sola vez, despues de 020.
 No se conecta ni se ejecuta automaticamente al iniciar el servidor.
+
+## Traslados internos mediados por Ventanilla (023)
+
+Antes de iniciar esta version del backend, aplicar **023 despues de 022** con
+`node migrations\023_solicitudes_traslado.js`, usando las mismas variables
+`DB_HOST`, `DB_USER`, `DB_PASSWORD` y `DB_NAME` de la base elegida. Respaldar
+antes estructura, datos y PDFs; no ejecutar mientras hay operaciones activas.
+No se ejecuta automaticamente al iniciar. El archivo SQL de 023 es una
+**plantilla**, no se importa directamente: el ejecutor conserva el tipo y la
+intercalacion de `numero_radicado` de instalaciones historicas. Solo crea la
+tabla `solicitudes_traslado`; no altera expedientes ni plazos existentes.
+Las finalizaciones individuales tambien necesitan esta tabla para cancelar
+solicitudes pendientes atomicamente. Reiniciar backend y recargar frontend
+despues de migrar; no combinar este backend con una base sin 023.
+
+Flujo: **dependencia A solicita -> Ventanilla/administrador decide -> B asume
+o A continua**. Solo funcionarios de la dependencia actual solicitan, sobre
+radicados individuales abiertos. Proponen otro destino activo y un motivo de
+10 a 2000 caracteres. Globales y radicados Respondido/Enterado quedan excluidos.
+Mientras esta pendiente A sigue responsable, puede responder o registrar
+Enterado cuando corresponda; esa finalizacion cancela la solicitud dentro de
+la misma transaccion. No hay cancelacion manual en esta version.
+
+Al aprobar, el control central confirma un destino activo distinto de A y
+justifica su decision (incluido cualquier cambio del destino propuesto).
+Solo cambia la dependencia responsable: conserva numero, consecutivo,
+fecha de recepcion, estado operativo, documentos y terminos/vencimientos.
+No suspende ni reinicia el reloj ni genera otro radicado. Al rechazar no cambia
+la asignacion. El traslado interno **no** es remision externa por competencia.
+La plantilla de respuesta llamada "Traslado por competencia" no ejecuta este flujo.
+
+### Contratos
+
+- `GET /api/traslados/dependencias`: catalogo autenticado para funcionario,
+  Ventanilla y administrador. Devuelve `{ success: true, dependencias }` con
+  solo `id`, `nombre` y `activo` de todas las dependencias activas, ordenadas por
+  nombre. Los selectores excluyen el origen del expediente. No amplia permisos
+  de radicados ni modifica `/api/dependencias`, que mantiene el alcance previo
+  por rol para alertas y otros usos. No requiere una migracion adicional.
+- `POST /api/radicados/:numero_radicado/traslados`: funcionario del destino actual.
+  JSON: `{ "clave_solicitud": "<UUID v4>", "destino_sugerido_id": 4,
+  "motivo": "Explicacion de la solicitud..." }`.
+  Devuelve 201 con `{ success: true, traslado }`; el mismo actor/UUID y contenido
+  devuelve 200 con el comprobante persistido, incluso si ya fue resuelto.
+  Cambiar el contenido de ese intento devuelve 409.
+- `POST /api/traslados/:id/decision`: Ventanilla/administrador.
+  Aprobar: `{ "decision": "aprobada", "destino_id": 4,
+  "motivo": "Justificacion de la competencia..." }`.
+  Rechazar: `{ "decision": "rechazada", "motivo": "Justificacion..." }`
+  sin `destino_id`. Respuesta 200 con `{ success: true, traslado }`.
+  Repetir exactamente la decision confirmada no duplica cambios ni auditoria;
+  otra decision/contenido o una cancelacion por finalizacion devuelve 409.
+- `GET /api/traslados?pagina=1&estado=pendiente`: 25 por pagina.
+  `estado` vacio muestra todos; admite tambien aprobada, rechazada y
+  cancelada_por_finalizacion. Filtro opcional exacto `numero_radicado`.
+  Devuelve `traslados`, `total`, `pagina`, `paginas`, `pendientes` (contador del
+  conjunto autorizado, independiente del filtro).
+- `GET /api/traslados/:id`: comprobante minimo. El funcionario solo ve
+  solicitudes cuyo origen es su dependencia; Ventanilla/administrador ven todas.
+  No contiene asunto, contactos, PDFs, contenido de respuestas, UUID ni huellas.
+
+Campos invalidos: 400; sin sesion: 401; rol no permitido: 403; expediente o
+comprobante fuera de alcance/inexistente: 404; conflicto de flujo: 409.
+Fallo de confirmacion: 500 con mensaje explicito para consultar/reintentar,
+nunca exito supuesto. Consultas preparadas y transacciones en todas las escrituras.
+
+### Permisos, concurrencia y recuperacion
+
+Existe una sola solicitud pendiente por radicado, protegida por restriccion
+unica y bloqueo. Las escrituras bloquean primero el radicado y despues la
+solicitud; las decisiones usan READ COMMITTED para releer el estado vigente
+tras esperar a otra transaccion. Las bandejas mantienen una instantanea
+REPEATABLE READ para contador y pagina. No cambian el aislamiento global.
+
+Si la aprobacion gana una carrera, A ya no puede responder; si gana la
+finalizacion, se cancela la solicitud y no se puede aprobar. Todo el cambio,
+la decision y el evento de auditoria se confirman juntos o se revierten.
+Se registran solicitud, aprobacion, rechazo y cancelacion con actor, motivos
+y fecha. La instantanea de vencimiento del comprobante es informativa:
+la fecha operativa sigue siendo la del expediente y sus ampliaciones.
+
+B adquiere el acceso normal por destino; A pierde acceso a detalle, historial,
+respuestas y descargas. A conserva solo el comprobante de su solicitud mediante
+las rutas especificas: no se amplia el filtro general por origen. Una copia
+PDF descargada legitimamente antes del traslado no se puede borrar remotamente.
+La interfaz limpia vistas temporales al recibir 403/404 y refresca Consulta.
+No hay notificaciones en tiempo real; los permisos se verifican en el servidor.
+
+El cliente conserva UUID/contenido del intento mientras su formulario esta
+abierto. Un resultado incierto bloquea su edicion y permite repetirlo; si se
+cierra el formulario o se recarga, consultar la bandeja antes de volver a solicitar. Una respuesta no
+demuestra entrega al ciudadano. Entrega, correos automaticos y archivo/TRD
+quedan fuera de este modulo.
+
+### Pruebas aisladas
+
+`npm test` incluye contratos, migracion y fallos transaccionales sin MySQL.
+Para la verificacion real, ejecutar **en un proceso independiente**:
+
+```powershell
+$env:TEST_TRASLADOS_MYSQL = '1'
+node --test test\traslados-mysql.test.js
+Remove-Item Env:\TEST_TRASLADOS_MYSQL
+```
+
+La prueba lee solo la estructura de `ventanilla_unica` (o
+`TRASLADOS_SCHEMA_DB=ventanilla_unica_test`), nunca sus registros. Crea una base
+aleatoria exclusiva `ventanilla_traslados_<12 hex>`, aplica 023 alli, genera
+expedientes y PDFs ficticios y comprueba permisos, 25 por pagina, rechazos,
+reintentos simultaneos, unicidad, rollback de auditoria y carreras contra
+respuesta/Enterado. Al terminar elimina exclusivamente esa base y sus PDFs.
+Requiere permisos locales de crear/eliminar esa base y crear triggers de prueba.
+No activar esta prueba junto a otras suites con aislamiento deshabilitado:
+el pool se configura para la base temporal antes de cargar la aplicacion.
 
 ## Reintentos seguros de radicacion
 

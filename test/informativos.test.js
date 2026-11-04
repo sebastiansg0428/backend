@@ -22,6 +22,7 @@ test('Enterado cierra solo informativos, por destino, con fecha y auditoría sin
     t.mock.method(pool, 'getConnection', async () => ({
         async beginTransaction() {}, async commit() {}, async rollback() {}, release() {},
         async execute(sql, valores) {
+            if (sql.includes("FROM solicitudes_traslado")) return [[]];
             if (sql.includes('SELECT estado, destino_todas_dependencias')) {
                 assert.match(sql, /FOR UPDATE/);
                 assert.match(sql, /dependencia_destino_id = \?/);

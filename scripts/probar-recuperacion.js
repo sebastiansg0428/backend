@@ -159,12 +159,21 @@ async function ejecutar() {
         await connection.query(`CREATE DATABASE \`${origen}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`);
         await connection.query(`CREATE DATABASE \`${destino}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`);
         await ejecutarProceso(cliente, [defaults, origen], { entrada: esquema });
-        const [migrada] = await connection.execute(
-            "SELECT COUNT(*) AS total FROM information_schema.TABLES WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'intentos_radicacion'", [origen]);
-        if (Number(migrada[0].total) === 0) {
-            const sql = await fs.readFile(path.join(repo, 'migrations', '022_idempotencia_radicacion.sql'), 'utf8');
-            await connection.query(`USE \`${origen}\``);
-            await connection.query(sql);
+        for (const [tabla, archivo] of [
+            ['intentos_radicacion', '022_idempotencia_radicacion.sql'],
+            ['solicitudes_traslado', '023_solicitudes_traslado.sql']
+        ]) {
+            const [migrada] = await connection.execute(
+                'SELECT COUNT(*) AS total FROM information_schema.TABLES WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?', [origen, tabla]);
+            if (Number(migrada[0].total) === 0) {
+                await connection.query(`USE \`${origen}\``);
+                if (tabla === 'solicitudes_traslado') {
+                    await require('../migrations/023_solicitudes_traslado')(connection);
+                } else {
+                    const sql = await fs.readFile(path.join(repo, 'migrations', archivo), 'utf8');
+                    await connection.query(sql);
+                }
+            }
         }
         const uploads = path.join(carpeta, 'origen-uploads');
         const fixture = path.join(carpeta, 'fixture.json');

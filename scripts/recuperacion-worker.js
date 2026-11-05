@@ -103,6 +103,15 @@ async function ejecutar() {
             assert.equal((await solicitar(2, `/api/radicados/${fixture.respuesta.radicado}/respuesta`, {
                 method: 'POST', body: respuestaForm
             })).status, 201);
+            fixture.claveEntrega = randomUUID();
+            const formEntrega = new FormData();
+            for (const [k, v] of Object.entries({ clave: fixture.claveEntrega, canal: 'correo_electronico',
+                resultado: 'entrega_acreditada', destinatario: 'Persona ficticia', destino: 'fixture@example.test',
+                fecha_actuacion: '2026-01-05T10:00', observaciones: 'Constancia exclusivamente ficticia.' })) formEntrega.append(k, v);
+            formEntrega.append('archivos', new Blob([bytes], { type: 'application/pdf' }), 'evidencia-ficticia.pdf');
+            const entrega = await solicitar(0, `/api/radicados/${fixture.respuesta.radicado}/entregas`, { method: 'POST', body: formEntrega });
+            assert.equal(entrega.status, 201, await entrega.clone().text());
+            fixture.entrega = (await entrega.json()).registro;
             const [conteos] = await pool.execute('SELECT COUNT(*) AS total FROM radicados');
             assert.equal(Number(conteos[0].total), 3);
             const [secuencia] = await pool.execute('SELECT SUM(ultimo_numero) AS total FROM secuencias_radicado');
@@ -131,12 +140,32 @@ async function ejecutar() {
         const descargada = await solicitar(2, `/uploads/${respuestas[0].ruta_archivo}`);
         assert.equal(descargada.status, 200);
         assert.deepEqual(Buffer.from(await descargada.arrayBuffer()), bytes);
+        const rutaEntregas = `/api/radicados/${fixture.respuesta.radicado}/entregas`;
+        const h = await (await solicitar(2, rutaEntregas)).json();
+        assert.equal(h.resumen, 'entrega_acreditada'); assert.equal(h.total, 1);
+        assert.deepEqual(h.registros[0], fixture.entrega);
+        const evidenciaRuta = `${rutaEntregas}/${fixture.entrega.id}/evidencias/${fixture.entrega.evidencias[0].id}`;
+        const evidencia = await solicitar(2, evidenciaRuta);
+        assert.equal(evidencia.status, 200);
+        assert.deepEqual(Buffer.from(await evidencia.arrayBuffer()), bytes);
+        assert.equal((await solicitar(3, evidenciaRuta)).status, 404);
+        const repetirEntrega = new FormData();
+        for (const [k, v] of Object.entries({ clave: fixture.claveEntrega, canal: 'correo_electronico',
+            resultado: 'entrega_acreditada', destinatario: 'Persona ficticia', destino: 'fixture@example.test',
+            fecha_actuacion: '2026-01-05T10:00', observaciones: 'Constancia exclusivamente ficticia.' })) repetirEntrega.append(k, v);
+        repetirEntrega.append('archivos', new Blob([bytes], { type: 'application/pdf' }), 'evidencia-ficticia.pdf');
+        const replayEntrega = await solicitar(0, rutaEntregas, { method: 'POST', body: repetirEntrega });
+        assert.equal(replayEntrega.status, 200);
+        assert.deepEqual((await replayEntrega.json()).registro, fixture.entrega);
+        const [[entregas]] = await pool.execute('SELECT COUNT(*) AS n FROM registros_entrega_respuesta');
+        const [[evidencias]] = await pool.execute('SELECT COUNT(*) AS n FROM evidencias_entrega');
+        assert.equal(Number(entregas.n), 1); assert.equal(Number(evidencias.n), 1);
         const [historial] = await pool.execute(
             "SELECT COUNT(*) AS total FROM historial_radicado WHERE event_type = 'radicado_creado'");
         assert.equal(Number(historial[0].total), 3);
         const [intentos] = await pool.execute('SELECT COUNT(*) AS total FROM intentos_radicacion');
         assert.equal(Number(intentos[0].total), 3);
-        console.log(JSON.stringify({ modo, validado: true, radicados: 3, intentos: 3, originales: 3, respuestas: 1 }));
+        console.log(JSON.stringify({ modo, validado: true, radicados: 3, intentos: 3, originales: 3, respuestas: 1, evidencias: 1 }));
     } finally {
         for (const id of sesiones) revocarSesiones(id);
         await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()));

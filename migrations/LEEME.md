@@ -25,11 +25,29 @@ con una conexión nueva y despliega frontend/backend juntos; reinicia el backend
 Las nuevas internas exigen origen activo y las externas tipo de persona/correo;
 las jurídicas exigen además razón social/NIT. No cambia el acceso por destino.
 
-La secuencia completa para instalaciones nuevas es 000-024, incluyendo los
-pasos JavaScript 002, 009, 020, 023 y 024 en su posición; consulta el
+La secuencia completa para instalaciones nuevas es 000-025, incluyendo los
+pasos JavaScript 002, 009, 020, 023, 024 y 025 en su posición; consulta el
 [README principal](../README.md). No reapliques esa secuencia a una base existente.
 La validación estática de migraciones no equivale a ejecutar toda la instalación
 en una base aislada.
+
+## Seguimiento manual de entrega (025)
+
+Despues de 024, [025_seguimiento_entrega.js](025_seguimiento_entrega.js) crea
+`registros_entrega_respuesta` y `evidencias_entrega`, con cuatro FK RESTRICT,
+PK e indices de historial y unicidad actor/UUID y ruta PDF.
+No modifica respuestas ni estados anteriores; no envia correos.
+`--verificar` es solo lectura; `--aplicar` requiere autorizacion y respaldo
+restaurable verificado, escrituras detenidas y configuracion de la base correcta.
+No se aplica al iniciar el servidor. **Aplicada y verificada en desarrollo**
+con respaldo restaurado y ensayo local previo; otras bases requieren su propia
+verificacion y autorizacion. No reejecutar `--aplicar` por rutina.
+Solo se reconoce como aplicada si ambas tablas, columnas, PK, UNIQUE e indices
+y FK son compatibles. Ante DDL parcial o fallo, inspeccionar desde otra conexion;
+no reejecutar a ciegas: CREATE tiene commit implicito, sin rollback global.
+Sin 025 el modulo nuevo devuelve 503 y conserva la consulta/respuesta existente.
+Respaldar tambien `uploads\entregas` y verificar hashes y descargas autenticadas.
+Consulta el [procedimiento y contrato](../README.md#seguimiento-manual-de-envio-y-entrega-025).
 
 ## Integridad referencial y unicidad (024)
 

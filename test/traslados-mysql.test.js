@@ -56,6 +56,7 @@ test('traslados HTTP/MySQL: permisos, concurrencia, reintentos y plazos en base 
         await require('../migrations/023_solicitudes_traslado')(admin);
     }
     await require('../migrations/024_integridad_referencial').migrarIntegridad(admin, { aplicar: true });
+    await require('../migrations/025_seguimiento_entrega').migrarEntregas(admin, { aplicar: true });
     process.env.DB_NAME = nombre;
     process.env.UPLOAD_DIR = uploads;
     pool = require('../db');
@@ -319,6 +320,224 @@ test('traslados HTTP/MySQL: permisos, concurrencia, reintentos y plazos en base 
         assert.equal(Number(conteo.n), 2);
     });
 
+    const entregaDatos = (cambios = {}) => ({ clave: randomUUID(), canal: 'correo_electronico', resultado: 'enviado',
+        destinatario: 'Persona ficticia', destino: 'fixture@example.test', fecha_actuacion: '2026-01-05T10:00',
+        observaciones: '', ...cambios });
+    const pdfEntrega = await PDFDocument.create();
+    pdfEntrega.addPage();
+    const bytesEntrega = Buffer.from(await pdfEntrega.save());
+    const entregar = (actor, numero, datos = entregaDatos(), archivos = []) => {
+        const form = new FormData();
+        for (const [k, v] of Object.entries(datos)) form.append(k, v);
+        for (const archivo of archivos) form.append('archivos',
+            new Blob([archivo.bytes || bytesEntrega], { type: 'application/pdf' }), archivo.nombre || 'evidencia-ficticia.pdf');
+        return fetch(`${url}/api/radicados/${numero}/entregas`, {
+            method: 'POST', headers: { Authorization: `Bearer ${tokens[actor]}` }, body: form,
+            signal: AbortSignal.timeout(30000),
+        });
+    };
+    async function listo() {
+        const numero = await radicar();
+        assert.equal((await responder(0, numero)).status, 201);
+        return numero;
+    }
+    const archivosEntrega = async () => {
+        try { return (await fs.readdir(path.join(uploads, 'entregas'))).sort(); }
+        catch (e) { if (e.code === 'ENOENT') return []; throw e; }
+    };
+    await t.test('025 valida columnas, PK, unicidad y FK; no modifica si ya aplicada', async () => {
+        const { verificar, migrarEntregas } = require('../migrations/025_seguimiento_entrega');
+        assert.deepEqual(await migrarEntregas(admin), { estado: 'aplicada', cambios: 0 });
+        await admin.query('ALTER TABLE evidencias_entrega DROP PRIMARY KEY, ADD PRIMARY KEY(id,registro_id)');
+        try { await assert.rejects(verificar(admin), /Indice 025 incompatible/); }
+        finally { await admin.query('ALTER TABLE evidencias_entrega DROP PRIMARY KEY, ADD PRIMARY KEY(id)'); }
+        await admin.query('ALTER TABLE evidencias_entrega DROP INDEX ruta_archivo');
+        try { await assert.rejects(verificar(admin), /Indice 025 incompatible/); }
+        finally { await admin.query('ALTER TABLE evidencias_entrega ADD UNIQUE KEY ruta_archivo(ruta_archivo)'); }
+        await admin.query('ALTER TABLE evidencias_entrega MODIFY nombre_archivo VARCHAR(255) NULL');
+        try { await assert.rejects(verificar(admin), /Columna 025 incompatible/); }
+        finally { await admin.query('ALTER TABLE evidencias_entrega MODIFY nombre_archivo VARCHAR(255) NOT NULL'); }
+        await admin.query('ALTER TABLE evidencias_entrega DROP FOREIGN KEY fk_evidencia_entrega');
+        try { await assert.rejects(verificar(admin), /FK 025 incompatibles/); }
+        finally { await admin.query(`ALTER TABLE evidencias_entrega ADD CONSTRAINT fk_evidencia_entrega
+            FOREIGN KEY(registro_id) REFERENCES registros_entrega_respuesta(id) ON DELETE RESTRICT ON UPDATE RESTRICT`); }
+        assert.equal(await verificar(admin), true);
+    });
+    await t.test('entregas sin 025 dan 503 sin romper consulta/respuesta; roles y alcance', async () => {
+        const numero = await listo();
+        await pool.query('RENAME TABLE evidencias_entrega TO fixture_evidencias_ocultas');
+        try {
+            assert.equal((await pedir(2, `/api/radicados/${numero}/entregas`)).status, 503);
+            assert.equal((await pedir(0, `/api/radicados/${numero}/respuesta`)).status, 200);
+        } finally { await pool.query('RENAME TABLE fixture_evidencias_ocultas TO evidencias_entrega'); }
+        assert.equal((await entregar(0, numero)).status, 403);
+        assert.equal((await entregar(1, numero)).status, 404);
+        assert.equal((await pedir(0, `/api/radicados/${numero}/entregas`)).status, 200);
+        assert.equal((await entregar(2, await radicar())).status, 404);
+        const global = await radicar({ global: true });
+        assert.equal((await entregar(2, global)).status, 409);
+        const interno = await radicar();
+        await pool.execute("UPDATE radicados SET tipo_comunicacion='Interna' WHERE numero_radicado=?", [interno]);
+        assert.equal((await entregar(2, interno)).status, 409);
+    });
+    await t.test('entregas rechazan PDF ausente/invalido, 6 archivos y archivo de mas de 10MB; limpian disco', async () => {
+        const numero = await listo();
+        const antes = await archivosEntrega();
+        const acreditar = entregaDatos({ resultado: 'entrega_acreditada' });
+        for (const archivos of [[], [{ bytes: Buffer.from('no PDF') }], Array.from({ length: 6 }, () => ({})),
+            [{ bytes: Buffer.alloc(10 * 1024 * 1024 + 1) }]]) {
+            assert.equal((await entregar(2, numero, acreditar, archivos)).status, 400);
+            assert.deepEqual(await archivosEntrega(), antes);
+        }
+        assert.equal((await entregar(2, numero, entregaDatos({ resultado: 'intento_fallido' }))).status, 400);
+        const h = await (await pedir(2, `/api/radicados/${numero}/entregas`)).json();
+        assert.equal(h.total, 0); assert.equal(h.resumen, 'pendiente_de_envio');
+    });
+    await t.test('entregas reintentos concurrentes tienen un evento, PDF y auditoria; preservan respuesta/plazo', async () => {
+        const numero = await listo();
+        const [original] = await pool.execute('SELECT * FROM radicados WHERE numero_radicado=?', [numero]);
+        const [terminos] = await pool.execute('SELECT * FROM radicado_terminos WHERE numero_radicado=?', [numero]);
+        const [respuesta] = await pool.execute('SELECT * FROM respuestas_radicado WHERE numero_radicado=?', [numero]);
+        const antes = await archivosEntrega();
+        const datos = entregaDatos();
+        const solicitudes = await Promise.all(Array.from({ length: 12 }, () => entregar(2, numero, datos, [{}])));
+        assert.equal(solicitudes.filter(r => r.status === 201).length, 1);
+        assert.equal(solicitudes.filter(r => r.status === 200).length, 11);
+        const comprobantes = await Promise.all(solicitudes.map(r => r.json()));
+        assert.equal(new Set(comprobantes.map(r => r.registro.id)).size, 1);
+        assert.equal((await archivosEntrega()).length, antes.length + 1);
+        assert.equal((await entregar(2, numero, { ...datos, destino: 'otro@example.test' }, [{}])).status, 409);
+        assert.equal((await entregar(2, numero, datos, [{ bytes: Buffer.concat([bytesEntrega, Buffer.from('\n')]) }])).status, 409);
+        assert.equal((await archivosEntrega()).length, antes.length + 1);
+        const [[audit]] = await pool.execute(`SELECT COUNT(*) AS n FROM historial_radicado
+            WHERE numero_radicado=? AND event_type='entrega_registrada'`, [numero]);
+        assert.equal(Number(audit.n), 1);
+        assert.deepEqual((await pool.execute('SELECT * FROM radicados WHERE numero_radicado=?', [numero]))[0], original);
+        assert.deepEqual((await pool.execute('SELECT * FROM radicado_terminos WHERE numero_radicado=?', [numero]))[0], terminos);
+        assert.deepEqual((await pool.execute('SELECT * FROM respuestas_radicado WHERE numero_radicado=?', [numero]))[0], respuesta);
+    });
+    await t.test('acreditacion directa unica, anulacion conservada e idempotente, historial paginado', async () => {
+        const numero = await listo();
+        const carrera = await Promise.all([2, 3].map(actor =>
+            entregar(actor, numero, entregaDatos({ resultado: 'entrega_acreditada' }), [{}])));
+        assert.deepEqual(carrera.map(r => r.status).sort(), [201, 409]);
+        const { registro } = await carrera.find(r => r.status === 201).json();
+        const ruta = `/api/radicados/${numero}/entregas`;
+        assert.equal((await entregar(2, numero)).status, 409);
+        assert.equal((await pedir(0, `${ruta}/${registro.id}/anulacion`, { motivo: 'Correccion ficticia documentada.' })).status, 403);
+        const motivo = { motivo: 'Correccion ficticia documentada.' };
+        const anulaciones = await Promise.all(Array.from({ length: 6 }, () => pedir(2, `${ruta}/${registro.id}/anulacion`, motivo)));
+        assert.ok(anulaciones.every(r => r.status === 200));
+        assert.equal((await pedir(2, `${ruta}/${registro.id}/anulacion`, { motivo: 'Otro motivo ficticio.' })).status, 409);
+        const descarga = await pedir(0, `${ruta}/${registro.id}/evidencias/${registro.evidencias[0].id}`);
+        assert.equal(descarga.status, 200);
+        assert.deepEqual(Buffer.from(await descarga.arrayBuffer()), bytesEntrega);
+        assert.equal((await (await pedir(2, ruta)).json()).resumen, 'pendiente_de_envio');
+        for (let i = 0; i < 26; i++) assert.equal((await entregar(2, numero)).status, 201);
+        const p1 = await (await pedir(0, ruta)).json();
+        const p2 = await (await pedir(0, `${ruta}?pagina=2`)).json();
+        assert.equal(p1.total, 27); assert.equal(p1.registros.length, 25); assert.equal(p2.registros.length, 2);
+        assert.equal(p1.resumen, 'enviado'); assert.equal(p2.resumen, 'enviado');
+        assert.equal(p1.paginas, 2); assert.equal(new Set([...p1.registros, ...p2.registros].map(r => r.id)).size, 27);
+    });
+    await t.test('fallo de auditoria revierte entrega/anulacion; limpia solo PDF del intento', async () => {
+        const numero = await listo();
+        const antes = await archivosEntrega();
+        await pool.query(`CREATE TRIGGER fixture_fallo_entrega BEFORE INSERT ON historial_radicado FOR EACH ROW
+            BEGIN IF NEW.event_type IN ('entrega_registrada','entrega_anulada') THEN
+            SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='Fallo ficticio de entrega'; END IF; END`);
+        try {
+            assert.equal((await entregar(2, numero, entregaDatos(), [{}])).status, 500);
+            assert.deepEqual(await archivosEntrega(), antes);
+            assert.equal((await (await pedir(2, `/api/radicados/${numero}/entregas`)).json()).total, 0);
+        } finally { await pool.query('DROP TRIGGER fixture_fallo_entrega'); }
+        const { registro } = await (await entregar(2, numero)).json();
+        await pool.query(`CREATE TRIGGER fixture_fallo_entrega BEFORE INSERT ON historial_radicado FOR EACH ROW
+            BEGIN IF NEW.event_type='entrega_anulada' THEN
+            SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='Fallo ficticio de anulacion'; END IF; END`);
+        try {
+            assert.equal((await pedir(2, `/api/radicados/${numero}/entregas/${registro.id}/anulacion`,
+                { motivo: 'Correccion ficticia documentada.' })).status, 500);
+            const h = await (await pedir(2, `/api/radicados/${numero}/entregas`)).json();
+            assert.equal(h.registros[0].anulado_en_utc, null);
+        } finally { await pool.query('DROP TRIGGER fixture_fallo_entrega'); }
+    });
+    await t.test('COMMIT incierto conserva evidencia persistida; reintento no duplica; fallo previo limpia', async () => {
+        for (const persistir of [true, false]) {
+            const numero = await listo();
+            const datos = entregaDatos();
+            const antes = await archivosEntrega();
+            const obtener = pool.getConnection.bind(pool);
+            const mock = t.mock.method(pool, 'getConnection', async () => {
+                mock.mock.restore();
+                const c = await obtener();
+                const commit = c.commit.bind(c);
+                c.commit = async () => {
+                    if (persistir) await commit();
+                    throw Object.assign(new Error('Conexion ficticia perdida durante COMMIT'), { code: 'FIXTURE_COMMIT' });
+                };
+                const release = c.release.bind(c);
+                c.release = () => { c.commit = commit; c.release = release; release(); };
+                return c;
+            });
+            try {
+                assert.equal((await entregar(2, numero, datos, [{}])).status, 500);
+                assert.equal((await archivosEntrega()).length, antes.length + Number(persistir));
+                assert.equal((await (await pedir(2, `/api/radicados/${numero}/entregas`)).json()).total, Number(persistir));
+                assert.equal((await entregar(2, numero, datos, [{}])).status, persistir ? 200 : 201);
+                assert.equal((await archivosEntrega()).length, antes.length + 1);
+            } finally { mock.mock.restore(); }
+        }
+    });
+    await t.test('evidencia requiere acceso actual; origen trasladado y rutas ajenas no acceden', async () => {
+        const numero = await radicar();
+        const traslado = await solicitar(numero);
+        assert.equal((await pedir(2, `/api/traslados/${traslado.id}/decision`, aprobar)).status, 200);
+        assert.equal((await responder(1, numero)).status, 201);
+        const { registro } = await (await entregar(2, numero, entregaDatos(), [{}])).json();
+        const ruta = `/api/radicados/${numero}/entregas/${registro.id}/evidencias/${registro.evidencias[0].id}`;
+        assert.equal((await pedir(0, ruta)).status, 404);
+        assert.equal((await pedir(1, ruta)).status, 200);
+        assert.equal((await pedir(2, ruta)).status, 200);
+        assert.equal((await pedir(2, ruta.replace(numero, await listo()))).status, 404);
+        const [[e]] = await pool.execute('SELECT ruta_archivo FROM evidencias_entrega WHERE id=?', [registro.evidencias[0].id]);
+        assert.equal((await pedir(2, `/uploads/${e.ruta_archivo}`)).status, 404);
+        const archivo = path.join(uploads, e.ruta_archivo);
+        await fs.rename(archivo, `${archivo}.oculto`);
+        try {
+            const perdida = await pedir(2, ruta);
+            assert.equal(perdida.status, 404); assert.ok(!(await perdida.text()).includes(uploads));
+        } finally { await fs.rename(`${archivo}.oculto`, archivo); }
+    });
+    await t.test('COMMIT y verificacion inciertos no borran evidencia confirmada', async () => {
+        const numero = await listo();
+        const datos = entregaDatos();
+        const antes = await archivosEntrega();
+        const obtener = pool.getConnection.bind(pool);
+        const ejecutar = pool.execute.bind(pool);
+        const falloLectura = t.mock.method(pool, 'execute', async (sql, ...args) => {
+            if (sql.startsWith('SELECT id,huella FROM registros_entrega_respuesta')) {
+                falloLectura.mock.restore();
+                throw Object.assign(new Error('Verificacion ficticia no disponible'), { code: 'FIXTURE_VERIFICACION' });
+            }
+            return ejecutar(sql, ...args);
+        });
+        const falloCommit = t.mock.method(pool, 'getConnection', async () => {
+            falloCommit.mock.restore();
+            const c = await obtener();
+            const commit = c.commit.bind(c);
+            const release = c.release.bind(c);
+            c.commit = async () => { await commit(); throw new Error('Confirmacion ficticia perdida'); };
+            c.release = () => { c.commit = commit; c.release = release; release(); };
+            return c;
+        });
+        try {
+            assert.equal((await entregar(2, numero, datos, [{}])).status, 500);
+            assert.equal((await archivosEntrega()).length, antes.length + 1);
+            assert.equal((await entregar(2, numero, datos, [{}])).status, 200);
+            assert.equal((await archivosEntrega()).length, antes.length + 1);
+        } finally { falloLectura.mock.restore(); falloCommit.mock.restore(); }
+    });
     await t.test('bandejas de 25 y contador por origen sin acceso por destino historico', async () => {
         for (let i = 0; i < 27; i++) await solicitar(await radicar());
         const pagina1 = await (await pedir(0, '/api/traslados?estado=pendiente')).json();

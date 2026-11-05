@@ -55,6 +55,7 @@ este orden, deteniendote si un paso falla:
 | 022 | [022_idempotencia_radicacion.sql](migrations/022_idempotencia_radicacion.sql) |
 | 023 | `node migrations\023_solicitudes_traslado.js` |
 | 024 | Verificar y aplicar explicitamente segun [integridad referencial](#integridad-referencial-y-unicidad-024) |
+| 025 | Activacion manual segun [seguimiento de entrega](#seguimiento-manual-de-envio-y-entrega-025) |
 
 Las migraciones SQL no son todas idempotentes y los cambios DDL pueden quedar
 confirmados aunque un paso posterior falle: no vuelvas a importar toda la
@@ -71,6 +72,84 @@ Actualmente no hay un registro automatico de migraciones aplicadas.
 
 La migracion 021 es incremental y debe aplicarse una sola vez, despues de 020.
 No se conecta ni se ejecuta automaticamente al iniciar el servidor.
+
+## Seguimiento manual de envio y entrega (025)
+
+Desde **Ver respuesta**, Ventanilla y administrador pueden registrar actuaciones
+realizadas fuera del sistema. Solo aplica a respuestas externas individuales;
+funcionarios con acceso actual consultan historial y evidencias. No incluye
+internos, globales o expedientes sin respuesta. **Respondido no acredita entrega**:
+`fecha_envio` legada sigue representando el registro de la respuesta institucional.
+No cambia estados, plazos, traslados, cierre documental ni TRD; no envia correo
+automatico ni determina la validez juridica de una notificacion.
+
+Canales: `correo_electronico` manual, `presencial`, `mensajeria`.
+Resultados: `enviado`, `entrega_acreditada`, `intento_fallido`. El fallido exige
+observaciones de al menos 10 caracteres. Acreditar exige PDF y puede hacerse
+directamente, sin envio anterior. Mientras exista acreditacion vigente no se
+admiten otras actuaciones: primero anular con motivo de 10 a 2000 caracteres.
+La anulacion conserva evento, evidencia, autor, motivo y fecha; no hay
+edicion ni borrado de registros.
+
+Cada registro admite hasta **5 PDF de 10 MB**, sin contrasena; opcionales salvo
+acreditacion. Se valida estructura PDF, extension/MIME y hash SHA256. Los nombres
+fisicos UUID se guardan en `uploads\entregas`; respaldo SQL y toda esa subcarpeta
+deben conservarse juntos. El historial no expone rutas fisicas. Las evidencias
+se descargan por ruta autenticada y permiso actual, nunca solo por estar en
+`/uploads`. Un comprobante de traslado historico no concede ese acceso.
+
+API autenticada:
+
+| Metodo/ruta | Contrato |
+| --- | --- |
+| `GET /api/radicados/:numero/entregas?pagina=1` | `success,resumen,registros,total,pagina,paginas`, 25 por pagina, orden de registro descendente |
+| `POST /api/radicados/:numero/entregas` | multipart: `clave` UUIDv4, `canal`, `resultado`, `destinatario` (150), `destino` (500), `fecha_actuacion`, `observaciones` (2000), `archivos` |
+| `POST /api/radicados/:numero/entregas/:id/anulacion` | JSON `{ "motivo": "Correccion documentada..." }` |
+| `GET /api/radicados/:numero/entregas/:id/evidencias/:evidencia` | PDF, acceso actual al expediente |
+
+`fecha_actuacion` es `YYYY-MM-DDTHH:mm` en Bogota, explicita y no futura;
+se almacena UTC separada del timestamp UTC de registro. El destino electronico
+debe ser correo valido; presencial/mensajeria exige lugar/direccion.
+Resumen: ninguna actuacion vigente = `pendiente_de_envio`; acreditacion vigente
+prioritaria; de lo contrario el ultimo registro no anulado, no la fecha digitada.
+
+Registro, evidencia y auditoria se confirman en la misma transaccion, con bloqueo
+radicado/respuesta. Respuestas 201 nuevo, 200 reintento exacto, 400 datos/carga,
+403 rol, 404 sin acceso/respuesta/evidencia, 409 alcance/conflicto/acreditacion,
+503 modulo sin activar. UUID por actor y huella de campos/PDF evitan duplicados.
+Anular nuevamente con igual motivo devuelve comprobante; otro motivo da 409.
+Auditoria conserva `entrega_registrada` y `entrega_anulada` sin contactos completos.
+
+Ante 500 o perdida de conexion, reintentar **los mismos datos, UUID y PDF**.
+La interfaz conserva el intento mientras sigue abierta; al recargar/cerrar,
+consultar historial antes de empezar otro. Si COMMIT es incierto y tampoco puede
+comprobarse persistencia, se conservan PDF y se informa el error: MySQL y disco
+no son una transaccion atomica. No purgar esos archivos sin investigacion.
+
+La [025](migrations/025_seguimiento_entrega.js) exige 024 verificada y crea dos
+tablas InnoDB con PK, FK RESTRICT y UNIQUE actor/UUID y ruta de evidencia.
+`--verificar` comprueba columnas, tipos, nulabilidad, indices y FK; solo reconoce
+el esquema completo. DDL parcial/incompatible aborta y no tiene rollback global.
+**025 aplicada y verificada en desarrollo**, despues de restaurar un respaldo
+local y ensayar la migracion en una copia temporal. Se conservaron las 18 tablas
+anteriores y los 18 archivos; las dos tablas nuevas quedaron vacias.
+La copia temporal se elimino; el respaldo protegido se conserva fuera de Git.
+Este estado corresponde a ese entorno, no activa automaticamente otras bases.
+Sin ella solo este modulo devuelve 503; consulta/respuestas existentes funcionan.
+Una futura activacion requiere autorizacion, respaldo restaurado/verificado,
+escrituras detenidas y seleccion explicita de base; no se ejecuta al arrancar:
+
+```powershell
+node migrations\025_seguimiento_entrega.js --verificar
+# Solo tras autorizacion y respaldo:
+node migrations\025_seguimiento_entrega.js --aplicar
+node migrations\025_seguimiento_entrega.js --verificar
+```
+
+Pruebas: `npm test` valida contratos unitarios y regresiones PDF; la suite
+`node --test test\traslados-mysql.test.js` con `TEST_TRASLADOS_MYSQL=1` tambien
+valida entregas en base/archivos exclusivamente ficticios: permisos, limites,
+paginacion, concurrencia, anulacion, auditoria, COMMIT incierto y descargas.
 
 ## Integridad referencial y unicidad (024)
 
@@ -302,8 +381,9 @@ exclusivas fuera del repositorio. Nunca restaura sobre una base existente ni
 borra las bases al finalizar. Usa solo **estructura** de `ventanilla_unica`
 (`RECOVERY_SCHEMA_DB` permite elegir `ventanilla_unica_test` si su esquema es
 compatible); no copia ciudadanos, usuarios ni PDFs de esas bases. Inserta
-cuentas, catalogos y tres radicados ficticios con tres PDFs originales y uno
-de respuesta, usando la API y los permisos reales.
+cuentas, catalogos y tres radicados ficticios con tres PDFs originales, uno
+de respuesta y uno de evidencia de entrega, usando la API y los permisos reales.
+Aplica 025 solamente en el origen ficticio y verifica su restauracion.
 
 Configura `DB_HOST`, `DB_USER`, `DB_PASSWORD` como en el backend y
 `MARIADB_BIN` con una carpeta absoluta que contenga `mariadb-dump` y `mariadb`.
@@ -322,8 +402,9 @@ terminar. Si la proteccion falla, la prueba se detiene.
 El worker termina antes de respaldar SQL (`--single-transaction`) y PDFs:
 no quedan escritores activos entre ambas copias. El manifest registra hashes,
 tamanos, filas por tabla y autoincrementos. La restauracion verifica todos los
-datos, secuencias, intentos, todas las FKs (32 con 023/024) y hashes de archivos;
-ademas prueba replay tras reinicio/restauracion y descargas por dependencia.
+datos, secuencias, intentos, todas las FKs (36 con 023/024/025) y hashes de archivos;
+ademas prueba replay de radicacion/entrega tras reinicio/restauracion y descargas
+por dependencia, incluidas evidencias en la ruta autenticada.
 La prueba envia 12 solicitudes concurrentes del mismo intento (superando el
 pool de 10 conexiones), compara sus 12 respuestas y exige un solo radicado y
 un solo consecutivo antes de crear los otros dos expedientes ficticios.

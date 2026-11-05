@@ -4,7 +4,7 @@ const crearMiddlewareCors = require('./cors');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
-const { PDFDocument, EncryptedPDFError } = require('pdf-lib');
+const { opcionesCargaPdf, validarArchivoPdf } = require('./pdf-adjuntos');
 const pool = require('./db');
 const { revertirTrasError } = require('./transacciones');
 const { registrarEventoRadicado } = require('./audit-log');
@@ -17,6 +17,7 @@ const { opcionesConsulta, consultarPagina } = require('./consulta-radicados');
 const { presentarRadicado } = require('./presentacion-radicado');
 const { validarClave, huellaSolicitud, buscarIntento, reservarIntento, confirmarIntento } = require('./idempotencia');
 const { router: trasladosRouter, cancelarTrasladoPendiente } = require('./traslados');
+const { crearRouterEntregas } = require('./entregas-respuesta');
 const {
     router: authRouter, autenticar, permitirRoles, filtroDependencia, autorizarRadicado
 } = require('./auth');
@@ -44,6 +45,7 @@ if (!fs.existsSync(uploadRespuestasDir)) {
 app.use('/api', authRouter);
 app.use('/api', autenticar);
 app.use('/api', trasladosRouter);
+app.use('/api', crearRouterEntregas(uploadDir));
 
 app.use('/uploads', autenticar, async (req, res, next) => {
     try {
@@ -117,49 +119,8 @@ const storageRespuesta = multer.diskStorage({
     }
 });
 
-function filtroPdf(req, file, cb) {
-    const extensionPdf = path.extname(file.originalname).toLowerCase() === '.pdf';
-    const mimeValido = !file.mimetype || file.mimetype === 'application/pdf';
-    if (!extensionPdf || !mimeValido) {
-        return cb(Object.assign(new Error('Cada documento adjunto debe ser un PDF.'), {
-            code: 'PDF_TIPO_INVALIDO'
-        }));
-    }
-    return cb(null, true);
-}
-
-const opcionesCargaPdf = {
-    limits: { fileSize: 10 * 1024 * 1024, files: 5 },
-    fileFilter: filtroPdf
-};
 const upload = multer({ storage, ...opcionesCargaPdf });
 const uploadRespuesta = multer({ storage: storageRespuesta, ...opcionesCargaPdf });
-
-async function validarArchivoPdf(archivo) {
-    const errorPdfInvalido = 'Uno o más archivos no contienen un PDF válido.';
-    if (!archivo || archivo.size < 5) return errorPdfInvalido;
-    const contenido = await fs.promises.readFile(archivo.path);
-    if (!/^%PDF-\d\.\d[\r\n]/.test(contenido.subarray(0, 9).toString('ascii')) ||
-        !/%%EOF[\x00\t\n\f\r ]*$/.test(contenido.subarray(-1024).toString('latin1'))) {
-        return errorPdfInvalido;
-    }
-    try {
-        const documento = await PDFDocument.load(contenido, {
-            throwOnInvalidObject: true,
-            updateMetadata: false
-        });
-        documento.getPages();
-        return null;
-    } catch (error) {
-        console.warn('PDF rechazado durante la validacion de estructura:', error.message);
-        // pdf-lib transpila este error sin conservar su prototipo de subclase.
-        if (error instanceof EncryptedPDFError ||
-            (error instanceof Error && error.message === new EncryptedPDFError().message)) {
-            return 'El archivo PDF está cifrado o protegido con contraseña y no se puede validar. Adjunta una copia sin protección, si tienes autorización para hacerlo.';
-        }
-        return errorPdfInvalido;
-    }
-}
 
 // Este intermediario traduce los errores de Multer a mensajes claros y evita
 // dejar archivos sueltos si se excede el límite o un archivo no es PDF.

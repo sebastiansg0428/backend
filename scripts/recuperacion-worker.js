@@ -56,6 +56,11 @@ async function ejecutar() {
         const rutaPdf = path.join(path.dirname(archivoFixture), 'fixture-original.pdf');
         const bytes = modo === 'crear' ? Buffer.from(await pdf.save()) : await fs.readFile(rutaPdf);
         if (modo === 'crear') await fs.writeFile(rutaPdf, bytes, { flag: 'wx' });
+        const evidenciaPdf = await PDFDocument.create();
+        evidenciaPdf.addPage([300, 300]);
+        const rutaEvidencia = path.join(path.dirname(archivoFixture), 'fixture-evidencia.pdf');
+        const bytesEvidencia = modo === 'crear' ? Buffer.from(await evidenciaPdf.save()) : await fs.readFile(rutaEvidencia);
+        if (modo === 'crear') await fs.writeFile(rutaEvidencia, bytesEvidencia, { flag: 'wx' });
         const solicitar = (actor, ruta, opciones = {}) => fetch(url + ruta, {
             signal: AbortSignal.timeout(30_000),
             ...opciones, headers: { ...opciones.headers, Authorization: `Bearer ${tokens[actor]}` }
@@ -104,18 +109,37 @@ async function ejecutar() {
                 method: 'POST', body: respuestaForm
             })).status, 201);
             fixture.claveEntrega = randomUUID();
+            const catalogo = await (await solicitar(0, `/api/radicados/${fixture.respuesta.radicado}/entregas/documentos-respuesta`)).json();
+            fixture.documentosEntrega = catalogo.documentos.map(d => ({ id: d.id, sha256: d.sha256 }));
             const formEntrega = new FormData();
             for (const [k, v] of Object.entries({ clave: fixture.claveEntrega, canal: 'correo_electronico',
                 resultado: 'entrega_acreditada', destinatario: 'Persona ficticia', destino: 'fixture@example.test',
-                fecha_actuacion: '2026-01-05T10:00', observaciones: 'Constancia exclusivamente ficticia.' })) formEntrega.append(k, v);
-            formEntrega.append('archivos', new Blob([bytes], { type: 'application/pdf' }), 'evidencia-ficticia.pdf');
+                version: '2', documentos_respuesta: JSON.stringify(fixture.documentosEntrega), observaciones: 'Constancia exclusivamente ficticia.' })) formEntrega.append(k, v);
+            formEntrega.append('archivos', new Blob([bytesEvidencia], { type: 'application/pdf' }), 'evidencia-ficticia.pdf');
             const entrega = await solicitar(0, `/api/radicados/${fixture.respuesta.radicado}/entregas`, { method: 'POST', body: formEntrega });
             assert.equal(entrega.status, 201, await entrega.clone().text());
             fixture.entrega = (await entrega.json()).registro;
+            const interno = await enviar(0, randomUUID(), { tipo_comunicacion: 'Interna',
+                remitente_tipo_persona: '', dependencia_remitente_id: String(fixture.dependenciaIds[1]) });
+            assert.equal(interno.status, 200, await interno.clone().text());
+            fixture.interno = (await interno.json()).radicado;
+            const respuestaInterna = new FormData();
+            respuestaInterna.append('contenido', 'Respuesta interna ficticia para restauracion.');
+            respuestaInterna.append('archivos', new Blob([bytesEvidencia], { type: 'application/pdf' }), 'oficio-interno.pdf');
+            assert.equal((await solicitar(2, `/api/radicados/${fixture.interno}/respuesta`, {
+                method: 'POST', body: respuestaInterna,
+            })).status, 201);
+            const bandeja = await (await solicitar(3, '/api/respuestas-internas')).json();
+            const recepcion = bandeja.registros.find(r => r.numero_radicado === fixture.interno);
+            const apertura = await solicitar(3, `/api/respuestas-internas/${recepcion.id}/apertura`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+            });
+            assert.equal(apertura.status, 200);
+            fixture.aperturaInterna = (await apertura.json()).recepcion;
             const [conteos] = await pool.execute('SELECT COUNT(*) AS total FROM radicados');
-            assert.equal(Number(conteos[0].total), 3);
+            assert.equal(Number(conteos[0].total), 4);
             const [secuencia] = await pool.execute('SELECT SUM(ultimo_numero) AS total FROM secuencias_radicado');
-            assert.equal(Number(secuencia[0].total), 3);
+            assert.equal(Number(secuencia[0].total), 4);
             // Probar replay sin depender de la vigencia posterior del catalogo.
             await pool.execute('UPDATE tipos_tramite SET activo = 0 WHERE id = ?', [fixture.tipoId]);
             await fs.writeFile(archivoFixture, JSON.stringify(fixture, null, 2), { flag: 'wx' });
@@ -132,8 +156,8 @@ async function ejecutar() {
         assert.deepEqual(antes, despues);
         const [originales] = await pool.execute('SELECT ruta_archivo FROM documentos_radicado ORDER BY id');
         const [respuestas] = await pool.execute('SELECT ruta_archivo FROM documentos_respuesta ORDER BY id');
-        assert.equal(originales.length, 3);
-        assert.equal(respuestas.length, 1);
+        assert.equal(originales.length, 4);
+        assert.equal(respuestas.length, 2);
         const original = originales[0].ruta_archivo;
         assert.equal((await solicitar(2, `/uploads/${original}`)).status, 200);
         assert.equal((await solicitar(3, `/uploads/${original}`)).status, 404);
@@ -144,28 +168,46 @@ async function ejecutar() {
         const h = await (await solicitar(2, rutaEntregas)).json();
         assert.equal(h.resumen, 'entrega_acreditada'); assert.equal(h.total, 1);
         assert.deepEqual(h.registros[0], fixture.entrega);
-        const evidenciaRuta = `${rutaEntregas}/${fixture.entrega.id}/evidencias/${fixture.entrega.evidencias[0].id}`;
+        const adicional = fixture.entrega.evidencias.find(e => e.origen === 'evidencia_adicional');
+        const evidenciaRuta = `${rutaEntregas}/${fixture.entrega.id}/evidencias/${adicional.id}`;
         const evidencia = await solicitar(2, evidenciaRuta);
         assert.equal(evidencia.status, 200);
-        assert.deepEqual(Buffer.from(await evidencia.arrayBuffer()), bytes);
+        assert.deepEqual(Buffer.from(await evidencia.arrayBuffer()), bytesEvidencia);
+        assert.equal(fixture.entrega.evidencias.length, 2);
+        const copia = fixture.entrega.evidencias.find(e => e.origen === 'documento_respuesta');
+        const descargaCopia = await solicitar(2, `${rutaEntregas}/${fixture.entrega.id}/evidencias/${copia.id}`);
+        assert.equal(descargaCopia.status, 200);
+        assert.deepEqual(Buffer.from(await descargaCopia.arrayBuffer()), bytes);
         assert.equal((await solicitar(3, evidenciaRuta)).status, 404);
         const repetirEntrega = new FormData();
         for (const [k, v] of Object.entries({ clave: fixture.claveEntrega, canal: 'correo_electronico',
             resultado: 'entrega_acreditada', destinatario: 'Persona ficticia', destino: 'fixture@example.test',
-            fecha_actuacion: '2026-01-05T10:00', observaciones: 'Constancia exclusivamente ficticia.' })) repetirEntrega.append(k, v);
-        repetirEntrega.append('archivos', new Blob([bytes], { type: 'application/pdf' }), 'evidencia-ficticia.pdf');
+            version: '2', documentos_respuesta: JSON.stringify(fixture.documentosEntrega), observaciones: 'Constancia exclusivamente ficticia.' })) repetirEntrega.append(k, v);
+        repetirEntrega.append('archivos', new Blob([bytesEvidencia], { type: 'application/pdf' }), 'evidencia-ficticia.pdf');
         const replayEntrega = await solicitar(0, rutaEntregas, { method: 'POST', body: repetirEntrega });
         assert.equal(replayEntrega.status, 200);
         assert.deepEqual((await replayEntrega.json()).registro, fixture.entrega);
         const [[entregas]] = await pool.execute('SELECT COUNT(*) AS n FROM registros_entrega_respuesta');
         const [[evidencias]] = await pool.execute('SELECT COUNT(*) AS n FROM evidencias_entrega');
-        assert.equal(Number(entregas.n), 1); assert.equal(Number(evidencias.n), 1);
+        assert.equal(Number(entregas.n), 1); assert.equal(Number(evidencias.n), 2);
+        const detalleInterno = await (await solicitar(3, `/api/respuestas-internas/${fixture.aperturaInterna.id}`)).json();
+        assert.deepEqual(detalleInterno.recepcion, fixture.aperturaInterna);
+        const docInterno = await solicitar(3, `/api/respuestas-internas/${fixture.aperturaInterna.id}/documentos/${detalleInterno.documentos[0].id}`);
+        assert.equal(docInterno.status, 200);
+        assert.deepEqual(Buffer.from(await docInterno.arrayBuffer()), bytesEvidencia);
+        const repetirApertura = await solicitar(3, `/api/respuestas-internas/${fixture.aperturaInterna.id}/apertura`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+        });
+        assert.equal(repetirApertura.status, 200);
+        assert.deepEqual((await repetirApertura.json()).recepcion, fixture.aperturaInterna);
+        const [[aperturas]] = await pool.execute("SELECT COUNT(*) AS n FROM historial_radicado WHERE event_type='respuesta_interna_abierta'");
+        assert.equal(Number(aperturas.n), 1);
         const [historial] = await pool.execute(
             "SELECT COUNT(*) AS total FROM historial_radicado WHERE event_type = 'radicado_creado'");
-        assert.equal(Number(historial[0].total), 3);
+        assert.equal(Number(historial[0].total), 4);
         const [intentos] = await pool.execute('SELECT COUNT(*) AS total FROM intentos_radicacion');
-        assert.equal(Number(intentos[0].total), 3);
-        console.log(JSON.stringify({ modo, validado: true, radicados: 3, intentos: 3, originales: 3, respuestas: 1, evidencias: 1 }));
+        assert.equal(Number(intentos[0].total), 4);
+        console.log(JSON.stringify({ modo, validado: true, radicados: 4, intentos: 4, originales: 4, respuestas: 2, evidencias: 2, aperturas_internas: 1 }));
     } finally {
         for (const id of sesiones) revocarSesiones(id);
         await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()));

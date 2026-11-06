@@ -12,7 +12,8 @@ const EVENTOS_RADICADO = new Set([
     'traslado_rechazado',
     'traslado_cancelado',
     'entrega_registrada',
-    'entrega_anulada'
+    'entrega_anulada',
+    'respuesta_interna_abierta'
 ]);
 
 function fechaUTC(fecha = new Date()) {

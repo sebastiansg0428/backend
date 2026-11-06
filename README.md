@@ -56,6 +56,8 @@ este orden, deteniendote si un paso falla:
 | 023 | `node migrations\023_solicitudes_traslado.js` |
 | 024 | Verificar y aplicar explicitamente segun [integridad referencial](#integridad-referencial-y-unicidad-024) |
 | 025 | Activacion manual segun [seguimiento de entrega](#seguimiento-manual-de-envio-y-entrega-025) |
+| 026 | Fecha automatica y documentos de respuesta; aplicada y verificada en desarrollo con respaldo restaurado y ensayo previo |
+| 027 | Recepcion digital interna y primera apertura; aplicada y verificada en desarrollo, independiente de 026 |
 
 Las migraciones SQL no son todas idempotentes y los cambios DDL pueden quedar
 confirmados aunque un paso posterior falle: no vuelvas a importar toda la
@@ -73,6 +75,112 @@ Actualmente no hay un registro automatico de migraciones aplicadas.
 La migracion 021 es incremental y debe aplicarse una sola vez, despues de 020.
 No se conecta ni se ejecuta automaticamente al iniciar el servidor.
 
+## Limpieza de radicados exclusivamente de prueba en desarrollo
+
+Se realizo una limpieza autorizada de todos los radicados de prueba del entorno
+local, despues de respaldar SQL/uploads, restaurarlos fielmente en una copia
+protegida y ensayar limpieza, rollback y radicacion por API. Se eliminaron
+10 radicados y sus respuestas, documentos, comunicaciones, historial, traslados,
+entregas, recepciones internas e intentos de idempotencia. Las 18 tablas operativas
+quedaron vacias, incluidas `secuencias_radicado`; el sufijo `0001` se comprobo
+solo con un registro ficticio en la copia, nunca en desarrollo.
+Los 26 PDF vinculados se retiraron del activo tras verificar sus copias respaldadas.
+El respaldo permanente se conserva protegido fuera de Git; copia de ensayo y
+credenciales temporales se eliminan al terminar.
+
+Se conservaron sin cambios los 6 usuarios, 24 dependencias, 19 tipos de tramite,
+12 terminos legales y 8 filas de limites de login. Tambien se conservaron todas
+las estructuras, indices, 41 FK activas y migraciones 024/025/026/027.
+`comunicaciones_internas`/`comunicaciones_externas` contienen filas de radicados,
+no catalogos: vaciarlas no retira las opciones Interna/Externa de la aplicacion.
+No se reiniciaron IDs tecnicos AUTO_INCREMENT ni se cambiaron contrasenas.
+Estas cantidades describen el momento de la limpieza, no el estado futuro.
+
+No usar `TRUNCATE`, `DROP` ni desactivar FK para repetir este procedimiento.
+Una nueva limpieza necesita autorizacion explicita, backend/otras escrituras
+detenidas, nuevo respaldo restaurado/verificado, inventario de rutas y ensayo.
+El orden de DELETE debe comprobarse contra el grafo FK y ejecutarse en una
+transaccion; la conservacion de configuracion/estructura se verifica antes del
+COMMIT y desde otra conexion despues. SQL y disco no son atomicos: retirar PDF
+solo tras confirmar SQL, por rutas exactas respaldadas y con hashes verificados.
+Archivos sin referencia se conservan y reportan, no se vacia uploads por comodines.
+Un COMMIT incierto o un fallo de disco detiene el procedimiento para investigacion.
+No restaurar desarrollo destructivamente de forma automatica.
+
+Reiniciar el backend y recargar/cerrar formularios y borradores antiguos tras la
+limpieza. Reiniciar consecutivos puede reutilizar numeros de prueba: descartar
+comprobantes antiguos. **No aplicar este reinicio a radicados reales ni a datos
+sujetos a retencion documental o referencias de sistemas externos.**
+
+## Circuitos de respuesta: externos e internos
+
+**Externos individuales:** la dependencia responsable registra la respuesta;
+se conserva la excepcion del administrador. Ventanilla no redacta respuestas:
+notifica fuera del sistema y registra/acredita el envio mediante el seguimiento
+manual de 025/026. El administrador conserva su gestion de entregas externas.
+No se envia correo automaticamente ni se certifica notificacion legal.
+
+**Internos individuales con respuesta:** solo un funcionario de la dependencia
+actualmente responsable puede responder; administrador y Ventanilla consultan.
+La transaccion crea respuesta, PDF, estado, auditoria y recepcion digital para
+la dependencia de origen (`dependencia_remitente_id`). No exige PDF ni evidencia
+fisica de envio. La respuesta queda disponible al confirmar; una pantalla ya
+abierta debe actualizar la bandeja (no hay WebSocket, push ni correo).
+La dependencia de origen recibe acceso exclusivamente a la respuesta y sus PDF,
+no a los originales ni a las acciones de gestion del expediente.
+No se amplia `filtroDependencia`, usado para autorizacion de escrituras.
+
+En Consulta, los funcionarios tienen **Respuestas internas recibidas**, con
+filtros todas/sin apertura/con apertura, contadores y paginas de 25.
+Abrir la respuesta correctamente en la vista, incluidos sus PDF, inicia un
+POST de primera apertura. Listar, resumir, precargar o descargar mediante GET
+no produce acuse. Solo un funcionario del origen activo puede registrarlo;
+destino, Ventanilla y administrador pueden ver trazabilidad sin marcar lectura.
+Se guarda primer actor/hora MySQL UTC, mostrada en Bogota, y una sola auditoria
+`respuesta_interna_abierta`. Reaperturas/reintentos concurrentes conservan ese
+acuse. Si falla, la respuesta permanece visible con error y opcion de reintentar;
+no se muestra como leida antes de recibir confirmacion.
+Una apertura tecnica no demuestra comprension ni constituye notificacion legal.
+No cambia estados, plazos, traslados o cierre. Globales e informativos quedan
+fuera de este nuevo circuito y mantienen su comportamiento anterior.
+
+| Metodo/ruta interna | Uso |
+| --- | --- |
+| `GET /api/respuestas-internas?pagina=1&estado=todas` | Bandeja del origen; estado `todas`, `pendientes` o `leidas`, resumen y paginacion |
+| `GET /api/respuestas-internas/:id` | Recepcion/contenido y documentos sin rutas fisicas |
+| `GET /api/respuestas-internas/:id/documentos/:documento` | PDF de esa respuesta, autorizado en cada peticion |
+| `POST /api/respuestas-internas/:id/apertura` | JSON `{}`, solo origen activo, sin fecha/actor del cliente; replay idempotente |
+| `GET /api/radicados/:numero/recepcion-interna` | Trazabilidad para origen, destino actual y roles centrales |
+
+La [027](migrations/027_respuestas_internas.js) crea `recepciones_internas`
+con UNIQUE por respuesta, tres FK RESTRICT e indice origen/id. Incorpora las
+respuestas internas historicas con origen valido, `historica=1`, sin primera
+apertura ni fecha de disponibilidad inventadas. La fecha legada de respuesta
+no se convierte silenciosamente a UTC. Origen ausente/inconsistente aborta.
+Verifica esquema, indices, FK y cobertura de filas; una carga historica incompleta
+no presenta una bandeja vacia exitosa. Tras inspeccion, `--aplicar` explicito
+completa solo filas faltantes compatibles sin sobrescribir acuses.
+DDL tiene commits implicitos, sin rollback global.
+
+**027 aplicada y verificada en desarrollo**, tras respaldo restaurado y ensayo
+local previo. Se incorporaron cuatro respuestas historicas sin disponibilidad,
+apertura ni actor inventados. Junto con 026 quedaron 23 tablas y 41 FK; las
+20 tablas anteriores y los 26 archivos conservaron contenido y hashes.
+La copia temporal se elimino; el respaldo protegido se conserva fuera de Git.
+Requiere 024 compatible, no exige 026 ni altera 025/026. En otras bases, aplicarla
+necesita autorizacion separada, respaldo restaurado/verificado, escrituras
+detenidas y base seleccionada explicitamente; no se autoaplica al iniciar.
+Sin 027 se informa no activado, nuevas respuestas internas individuales se
+rechazan sin persistencia parcial y externos/consulta historica previa siguen
+funcionando. Reiniciar el backend y recargar el frontend para usar el codigo actualizado.
+
+```powershell
+node migrations\027_respuestas_internas.js --verificar
+# Solo tras autorizacion y respaldo restaurado/verificado:
+node migrations\027_respuestas_internas.js --aplicar
+node migrations\027_respuestas_internas.js --verificar
+```
+
 ## Seguimiento manual de envio y entrega (025)
 
 Desde **Ver respuesta**, Ventanilla y administrador pueden registrar actuaciones
@@ -85,14 +193,20 @@ automatico ni determina la validez juridica de una notificacion.
 
 Canales: `correo_electronico` manual, `presencial`, `mensajeria`.
 Resultados: `enviado`, `entrega_acreditada`, `intento_fallido`. El fallido exige
-observaciones de al menos 10 caracteres. Acreditar exige PDF y puede hacerse
+observaciones de al menos 10 caracteres. Acreditar exige evidencia PDF adicional y puede hacerse
 directamente, sin envio anterior. Mientras exista acreditacion vigente no se
 admiten otras actuaciones: primero anular con motivo de 10 a 2000 caracteres.
 La anulacion conserva evento, evidencia, autor, motivo y fecha; no hay
 edicion ni borrado de registros.
 
-Cada registro admite hasta **5 PDF de 10 MB**, sin contrasena; opcionales salvo
-acreditacion. Se valida estructura PDF, extension/MIME y hash SHA256. Los nombres
+Con 026, cada registro admite hasta **5 PDF de respuesta y 5 evidencias nuevas,
+10 MB por archivo**, sin contrasena. El catalogo incluye todos los PDF de respuesta
+por defecto en la interfaz, permite desmarcarlos y no rellena el input nativo.
+Se copian con nombres propios sin mover ni modificar originales. Para acreditar,
+adjuntar al menos una evidencia nueva de recepcion diferente por SHA256 de todos
+los PDF de respuesta; el oficio por si solo no acredita recepcion. Esta comparacion
+solo detecta copias exactas, no certifica autenticidad ni suficiencia juridica.
+Se valida estructura PDF, extension/MIME y hash SHA256. Los nombres
 fisicos UUID se guardan en `uploads\entregas`; respaldo SQL y toda esa subcarpeta
 deben conservarse juntos. El historial no expone rutas fisicas. Las evidencias
 se descargan por ruta autenticada y permiso actual, nunca solo por estar en
@@ -102,16 +216,21 @@ API autenticada:
 
 | Metodo/ruta | Contrato |
 | --- | --- |
-| `GET /api/radicados/:numero/entregas?pagina=1` | `success,resumen,registros,total,pagina,paginas`, 25 por pagina, orden de registro descendente |
-| `POST /api/radicados/:numero/entregas` | multipart: `clave` UUIDv4, `canal`, `resultado`, `destinatario` (150), `destino` (500), `fecha_actuacion`, `observaciones` (2000), `archivos` |
+| `GET /api/radicados/:numero/entregas?pagina=1` | `success,automatico_disponible,resumen,registros,total,pagina,paginas`, 25 por pagina, orden de registro descendente |
+| `GET /api/radicados/:numero/entregas/documentos-respuesta` | Catalogo autorizado `documentos`: ID, nombre, bytes, SHA256; sin rutas fisicas |
+| `POST /api/radicados/:numero/entregas` | multipart: `version=2`, `clave` UUIDv4, `canal`, `resultado`, `destinatario` (150), `destino` (500), `observaciones` (2000), `documentos_respuesta` JSON `[{id,sha256}]`, `archivos` nuevos |
 | `POST /api/radicados/:numero/entregas/:id/anulacion` | JSON `{ "motivo": "Correccion documentada..." }` |
 | `GET /api/radicados/:numero/entregas/:id/evidencias/:evidencia` | PDF, acceso actual al expediente |
 
-`fecha_actuacion` es `YYYY-MM-DDTHH:mm` en Bogota, explicita y no futura;
-se almacena UTC separada del timestamp UTC de registro. El destino electronico
+La fecha ya no se digita: MySQL genera `UTC_TIMESTAMP(6)` al confirmar el primer
+registro, igual para fecha de actuacion y creacion. Se muestra en Bogota; no
+permite fechar retrospectivamente la actuacion. El contrato 2 rechaza una fecha
+enviada por el navegador. Los historicos mantienen sus fechas y el contrato 1
+solo admite replay de intentos existentes, nunca nuevos registros manuales.
+El destino electronico
 debe ser correo valido; presencial/mensajeria exige lugar/direccion.
 Resumen: ninguna actuacion vigente = `pendiente_de_envio`; acreditacion vigente
-prioritaria; de lo contrario el ultimo registro no anulado, no la fecha digitada.
+prioritaria; de lo contrario el ultimo registro no anulado.
 
 Registro, evidencia y auditoria se confirman en la misma transaccion, con bloqueo
 radicado/respuesta. Respuestas 201 nuevo, 200 reintento exacto, 400 datos/carga,
@@ -121,6 +240,9 @@ Anular nuevamente con igual motivo devuelve comprobante; otro motivo da 409.
 Auditoria conserva `entrega_registrada` y `entrega_anulada` sin contactos completos.
 
 Ante 500 o perdida de conexion, reintentar **los mismos datos, UUID y PDF**.
+El mismo intento conserva fecha y copias persistidas, incluso si luego falta
+el original. La huella incluye IDs/hashes seleccionados en orden canonico,
+campos y archivos nuevos, no la hora generada ni nombres fisicos aleatorios.
 La interfaz conserva el intento mientras sigue abierta; al recargar/cerrar,
 consultar historial antes de empezar otro. Si COMMIT es incierto y tampoco puede
 comprobarse persistencia, se conservan PDF y se informa el error: MySQL y disco
@@ -144,6 +266,27 @@ node migrations\025_seguimiento_entrega.js --verificar
 # Solo tras autorizacion y respaldo:
 node migrations\025_seguimiento_entrega.js --aplicar
 node migrations\025_seguimiento_entrega.js --verificar
+```
+
+La [026](migrations/026_documentos_entrega.js) esta **aplicada y verificada en
+desarrollo**, con respaldo restaurado y ensayo local previo. Sus dos tablas
+nuevas quedaron vacias al activarla. No modifica 025 ni sus tablas:
+crea `entregas_confirmacion` (presencia = contrato 2) y
+`documentos_entrega_origen` (documento de respuesta/evidencia adicional), ambas
+con PK y FK RESTRICT. Ausencia de metadata significa contrato 1/adjunto legado.
+No reclasifica historicos como evidencia adicional ni cambia sus huellas.
+Verifica 025, tipos, PK y FK; un esquema parcial/incompatible aborta explicitamente.
+DDL tiene commits implicitos, sin rollback global. No se aplica al arrancar.
+En otras bases sin 026, el historial, descargas y anulaciones siguen disponibles
+con 025, pero el formulario nuevo queda deshabilitado y nuevos registros
+devuelven 503. Activarlas alli requiere autorizacion, respaldo restaurado/verificado
+y escrituras detenidas; no reejecutar `--aplicar` por rutina.
+
+```powershell
+node migrations\026_documentos_entrega.js --verificar
+# Solo tras autorizacion independiente y respaldo:
+node migrations\026_documentos_entrega.js --aplicar
+node migrations\026_documentos_entrega.js --verificar
 ```
 
 Pruebas: `npm test` valida contratos unitarios y regresiones PDF; la suite
@@ -381,9 +524,12 @@ exclusivas fuera del repositorio. Nunca restaura sobre una base existente ni
 borra las bases al finalizar. Usa solo **estructura** de `ventanilla_unica`
 (`RECOVERY_SCHEMA_DB` permite elegir `ventanilla_unica_test` si su esquema es
 compatible); no copia ciudadanos, usuarios ni PDFs de esas bases. Inserta
-cuentas, catalogos y tres radicados ficticios con tres PDFs originales, uno
-de respuesta y uno de evidencia de entrega, usando la API y los permisos reales.
-Aplica 025 solamente en el origen ficticio y verifica su restauracion.
+cuentas, catalogos y cuatro radicados ficticios con cuatro PDF originales, dos
+de respuesta, una copia de oficio externo y una evidencia adicional (8 PDF),
+usando la API y los permisos reales.
+Aplica 025/026/027 solamente en el origen ficticio y verifica su restauracion.
+Incluye una respuesta interna con primera apertura: tras reinicio/restauracion
+conserva actor, hora y una unica auditoria, y permite descargar su PDF al origen.
 
 Configura `DB_HOST`, `DB_USER`, `DB_PASSWORD` como en el backend y
 `MARIADB_BIN` con una carpeta absoluta que contenga `mariadb-dump` y `mariadb`.
@@ -402,12 +548,12 @@ terminar. Si la proteccion falla, la prueba se detiene.
 El worker termina antes de respaldar SQL (`--single-transaction`) y PDFs:
 no quedan escritores activos entre ambas copias. El manifest registra hashes,
 tamanos, filas por tabla y autoincrementos. La restauracion verifica todos los
-datos, secuencias, intentos, todas las FKs (36 con 023/024/025) y hashes de archivos;
+datos, secuencias, intentos, todas las FKs (41 con 023/024/025/026/027) y hashes de archivos;
 ademas prueba replay de radicacion/entrega tras reinicio/restauracion y descargas
 por dependencia, incluidas evidencias en la ruta autenticada.
 La prueba envia 12 solicitudes concurrentes del mismo intento (superando el
 pool de 10 conexiones), compara sus 12 respuestas y exige un solo radicado y
-un solo consecutivo antes de crear los otros dos expedientes ficticios.
+un solo consecutivo antes de crear los otros tres expedientes ficticios.
 El reporte conserva estas cantidades como evidencia de concurrencia.
 El dump nativo usa su gestion estandar de FKs durante la importacion; la
 verificacion explicita posterior rechaza referencias huerfanas.

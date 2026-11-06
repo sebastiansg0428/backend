@@ -18,6 +18,7 @@ const { presentarRadicado } = require('./presentacion-radicado');
 const { validarClave, huellaSolicitud, buscarIntento, reservarIntento, confirmarIntento } = require('./idempotencia');
 const { router: trasladosRouter, cancelarTrasladoPendiente } = require('./traslados');
 const { crearRouterEntregas } = require('./entregas-respuesta');
+const { crearRouterInternas, registrarRecepcionInterna, internaIndividual } = require('./respuestas-internas');
 const {
     router: authRouter, autenticar, permitirRoles, filtroDependencia, autorizarRadicado
 } = require('./auth');
@@ -46,6 +47,7 @@ app.use('/api', authRouter);
 app.use('/api', autenticar);
 app.use('/api', trasladosRouter);
 app.use('/api', crearRouterEntregas(uploadDir));
+app.use('/api', crearRouterInternas(uploadDir));
 
 app.use('/uploads', autenticar, async (req, res, next) => {
     try {
@@ -1439,7 +1441,8 @@ app.post(
             const filtro = filtroDependencia(req.usuario, 'r');
             const [radicados] = await connection.execute(
                 `SELECT r.estado, r.destino_todas_dependencias, r.requiere_respuesta,
-                        r.dependencia_destino_id, r.dependencia_destino FROM radicados r
+                        r.dependencia_destino_id, r.dependencia_destino, r.tipo_comunicacion,
+                        r.dependencia_remitente_id FROM radicados r
                  WHERE r.numero_radicado = ? AND ${filtro.sql} FOR UPDATE`,
                 [numeroRadicado, ...filtro.valores]
             );
@@ -1447,6 +1450,12 @@ app.post(
                 reversionIntentada = true;
                 await connection.rollback(); (req.files || []).forEach(eliminarArchivoSubido);
                 return responderError(res, 404, 'Radicado no encontrado o fuera de tu dependencia.');
+            }
+            if (internaIndividual(radicados[0]) && (req.usuario.rol !== 'funcionario' ||
+                req.usuario.dependencia_id !== radicados[0].dependencia_destino_id)) {
+                reversionIntentada = true;
+                await connection.rollback(); (req.files || []).forEach(eliminarArchivoSubido);
+                return responderError(res, 403, 'Solo la dependencia responsable puede responder este radicado interno.');
             }
             if (!requiereRespuesta(radicados[0])) {
                 reversionIntentada = true;
@@ -1526,6 +1535,7 @@ app.post(
                     req.files?.[0] ? `respuestas/${req.files[0].filename}` : null, req.usuario.id]
             );
             const idRespuesta = resultadoRespuesta.insertId;
+            await registrarRecepcionInterna(connection, idRespuesta, radicados[0]);
             // Cada PDF queda en su propia fila y relacionado con la respuesta creada.
             for (const archivo of req.files || []) {
                 await connection.execute(
@@ -1586,7 +1596,7 @@ app.post(
             (req.files || []).forEach(eliminarArchivoSubido);
             if (error instanceof multer.MulterError) return responderError(res, 400, 'El archivo supera el límite de 10 MB o no se pudo procesar.');
             console.error('Error al registrar respuesta institucional:', error);
-            return responderError(res, 500, 'Error interno al guardar la respuesta.');
+            return responderError(res, error.status || 500, error.status ? error.message : 'Error interno al guardar la respuesta.');
         } finally {
             if (connection) connection.release();
         }

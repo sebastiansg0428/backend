@@ -11,9 +11,13 @@ function filtroPdf(req, file, cb) {
 }
 const opcionesCargaPdf = { limits: { fileSize: 10 * 1024 * 1024, files: 5 }, fileFilter: filtroPdf };
 async function validarArchivoPdf(archivo) {
-    const invalido = 'Uno o más archivos no contienen un PDF válido.';
-    if (!archivo || archivo.size < 5) return invalido;
+    if (!archivo || archivo.size < 5) return 'Uno o más archivos no contienen un PDF válido.';
     const contenido = await fs.readFile(archivo.path);
+    return validarContenidoPdf(contenido);
+}
+async function validarContenidoPdf(contenido) {
+    const invalido = 'Uno o más archivos no contienen un PDF válido.';
+    if (contenido.length < 5) return invalido;
     if (!/^%PDF-\d\.\d[\r\n]/.test(contenido.subarray(0, 9).toString('ascii')) ||
         !/%%EOF[\x00\t\n\f\r ]*$/.test(contenido.subarray(-1024).toString('latin1'))) return invalido;
     try {
@@ -29,4 +33,4 @@ async function validarArchivoPdf(archivo) {
         return invalido;
     }
 }
-module.exports = { filtroPdf, opcionesCargaPdf, validarArchivoPdf };
+module.exports = { filtroPdf, opcionesCargaPdf, validarArchivoPdf, validarContenidoPdf };

@@ -178,6 +178,8 @@ async function ejecutar() {
         await connection.query(`USE \`${origen}\``);
         await require('../migrations/024_integridad_referencial').migrarIntegridad(connection, { aplicar: true });
         await require('../migrations/025_seguimiento_entrega').migrarEntregas(connection, { aplicar: true });
+        await require('../migrations/026_documentos_entrega').migrarDocumentosEntrega(connection, { aplicar: true });
+        await require('../migrations/027_respuestas_internas').migrarRespuestasInternas(connection, { aplicar: true });
         const uploads = path.join(carpeta, 'origen-uploads');
         const fixture = path.join(carpeta, 'fixture.json');
         const envOrigen = { ...process.env, DB_NAME: origen, UPLOAD_DIR: uploads };
@@ -189,7 +191,7 @@ async function ejecutar() {
         const datosAntes = await snapshot(connection, origen);
         const referencias = await verificarReferencias(connection, origen);
         const pdfsAntes = await archivosPdf(uploads);
-        assert.equal(pdfsAntes.length, 5);
+        assert.equal(pdfsAntes.length, 8);
         const respaldo = path.join(carpeta, 'respaldo.sql');
         // Ningun escritor de fixtures sigue activo al copiar SQL y PDFs.
         await ejecutarProceso(dump, [defaults, '--single-transaction', '--skip-comments',
@@ -217,6 +219,8 @@ async function ejecutar() {
         assert.deepEqual(await archivosPdf(restaurados), pdfsAntes);
         await connection.query(`USE \`${destino}\``);
         assert.equal(await require('../migrations/025_seguimiento_entrega').verificar(connection), true);
+        assert.equal(await require('../migrations/026_documentos_entrega').verificar(connection), true);
+        assert.equal((await require('../migrations/027_respuestas_internas').migrarRespuestasInternas(connection)).estado, 'aplicada');
         await ejecutarProceso(process.execPath, [worker, 'verificar', fixture], {
             env: { ...process.env, DB_NAME: destino, UPLOAD_DIR: restaurados }
         });

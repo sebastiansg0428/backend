@@ -25,11 +25,46 @@ con una conexión nueva y despliega frontend/backend juntos; reinicia el backend
 Las nuevas internas exigen origen activo y las externas tipo de persona/correo;
 las jurídicas exigen además razón social/NIT. No cambia el acceso por destino.
 
-La secuencia completa para instalaciones nuevas es 000-025, incluyendo los
-pasos JavaScript 002, 009, 020, 023, 024 y 025 en su posición; consulta el
+La secuencia completa para instalaciones nuevas es 000-027, incluyendo los
+pasos JavaScript 002, 009, 020, 023, 024, 025, 026 y 027 en su posición; consulta el
 [README principal](../README.md). No reapliques esa secuencia a una base existente.
 La validación estática de migraciones no equivale a ejecutar toda la instalación
 en una base aislada.
+
+## Recepcion digital interna (027)
+
+[027_respuestas_internas.js](027_respuestas_internas.js) exige 024 compatible,
+pero es independiente de 026. Crea `recepciones_internas`, UNIQUE por respuesta,
+indice origen/id y FK RESTRICT a respuesta, dependencia y primer actor.
+Solo internos individuales con respuesta; no agrega canales al esquema 025.
+Incorpora historicas con origen valido sin inventar disponibilidad ni lectura.
+Un origen ausente/incompatible aborta antes de crear/cargar; verifica columnas,
+PK, UNIQUE, indice, FK y cobertura. Una carga incompleta se reporta pendiente.
+Inspeccionar antes de reanudar con `--aplicar`: completa filas faltantes, nunca
+sobrescribe primera apertura. CREATE tiene commit implicito, sin rollback global.
+**Aplicada y verificada en desarrollo**, tras respaldo restaurado y ensayo local.
+Cuatro respuestas historicas incorporadas sin disponibilidad ni apertura inventadas;
+datos anteriores y archivos intactos. Copia temporal eliminada, respaldo conservado.
+`--verificar` es de solo lectura. Aplicar requiere autorizacion separada,
+respaldo restaurado/verificado y escrituras detenidas; no se ejecuta al arrancar.
+Sin 027, nuevas respuestas internas individuales se rechazan explicitamente
+sin persistencia parcial; externos y consulta historica anterior siguen disponibles.
+
+## Fecha automatica y documentos de respuesta (026)
+
+[026_documentos_entrega.js](026_documentos_entrega.js) requiere 025 verificada.
+Crea `entregas_confirmacion` y `documentos_entrega_origen`: marca contrato 2 y
+origen de los adjuntos mediante PK/FK RESTRICT, sin alterar tablas de 025 ni
+sus columnas, registros o huellas. Sin metadata se conserva el contrato historico
+y el origen legado. La hora se genera en MySQL al confirmar, no al migrar.
+**Aplicada y verificada en desarrollo**, tras respaldo restaurado y ensayo local;
+las dos tablas nuevas quedaron vacias, sin alterar 025 ni archivos previos.
+`--verificar` no escribe; `--aplicar` requiere autorizacion separada, respaldo
+restaurado/verificado y escrituras detenidas. No se autoaplica.
+Comprueba esquema completo y aborta ante DDL parcial/incompatible; CREATE
+tiene commit implicito, sin rollback global. Sin 026 siguen consulta, descarga
+y anulacion de 025, pero nuevos registros automaticos devuelven 503.
+Conservar juntos SQL y `uploads\entregas`, incluidas copias y evidencias nuevas.
 
 ## Seguimiento manual de entrega (025)
 

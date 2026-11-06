@@ -22,3 +22,15 @@ test('resumen preserva acreditacion y recalcula tras anulacion', () => {
     assert.equal(resumen([{ resultado: 'enviado' }, { resultado: 'entrega_acreditada' }]), 'entrega_acreditada');
     assert.equal(resumen([{ resultado: 'entrega_acreditada', anulado_en_utc: 'fecha' }, { resultado: 'enviado' }]), 'enviado');
 });
+test('contrato 2 rechaza fecha cliente, valida y canoniza IDs/hash sin generar timestamp en la huella', () => {
+    const { fecha_actuacion, ...base } = datos();
+    const body = { ...base, version: '2', documentos_respuesta: JSON.stringify([{ id: 2, sha256: 'b'.repeat(64) }, { id: 1, sha256: 'a'.repeat(64) }]) };
+    const r = validarRegistro(body);
+    assert.equal(r.fecha, undefined); assert.equal(r.version, 2);
+    assert.deepEqual(r.documentos.map(d => d.id), [1, 2]);
+    for (const cambios of [
+        { fecha_actuacion }, { documentos_respuesta: 'no json' }, { documentos_respuesta: '[{}]' },
+        { documentos_respuesta: JSON.stringify([{ id: 1, sha256: 'a'.repeat(64) }, { id: 1, sha256: 'a'.repeat(64) }]) },
+        { documentos_respuesta: JSON.stringify(Array.from({ length: 6 }, (_, i) => ({ id: i + 1, sha256: 'a'.repeat(64) }))) },
+    ]) assert.throws(() => validarRegistro({ ...body, ...cambios }), { status: 400 });
+});

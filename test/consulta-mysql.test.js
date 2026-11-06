@@ -4,14 +4,16 @@ const { once } = require('node:events');
 const { randomUUID } = require('node:crypto');
 const fs = require('node:fs/promises');
 const path = require('node:path');
+const { crearEntornoMysql } = require('../test-support/mysql-aislado.cjs');
 
 const habilitada = process.env.TEST_CONSULTA_MYSQL === '1';
 
 test('HTTP y MySQL aislados: paginas, permisos, PDFs, respuesta, Enterado y globales', {
     skip: !habilitada
 }, async t => {
-    assert.equal(process.env.DB_NAME, 'ventanilla_unica_test', 'Nunca ejecutar sobre la base principal.');
+    const entorno = await crearEntornoMysql(t, 'consulta');
     const pool = require('../db');
+    entorno.registrarPool(pool);
     const app = require('../server');
     const { crearSesion, revocarSesiones, hashPassword } = require('../auth');
     const { agregarDias, obtenerFechaLocal } = require('../semaforo');
@@ -20,35 +22,10 @@ test('HTTP y MySQL aislados: paginas, permisos, PDFs, respuesta, Enterado y glob
     const dependencias = [];
     const usuarios = [];
     const numeros = [];
-    const archivos = [];
     let tipo;
     let termino;
     t.after(async () => {
         for (const id of usuarios) revocarSesiones(id);
-        for (const numero of numeros) {
-            const [documentos] = await pool.execute(
-                `SELECT dr.ruta_archivo FROM documentos_respuesta dr
-                 JOIN respuestas_radicado rr ON rr.id = dr.respuesta_id WHERE rr.numero_radicado = ?`, [numero]);
-            for (const documento of documentos) {
-                assert.match(documento.ruta_archivo, /^respuestas\/respuesta-[a-f0-9-]+\.pdf$/);
-                archivos.push(path.join(__dirname, '..', 'uploads', documento.ruta_archivo));
-            }
-            await pool.execute('DELETE FROM historial_radicado WHERE numero_radicado = ?', [numero]);
-            await pool.execute('DELETE FROM radicado_terminos WHERE numero_radicado = ?', [numero]);
-            await pool.execute(
-                `DELETE FROM documentos_respuesta WHERE respuesta_id IN
-                 (SELECT id FROM respuestas_radicado WHERE numero_radicado = ?)`, [numero]);
-            await pool.execute('DELETE FROM respuestas_radicado WHERE numero_radicado = ?', [numero]);
-            await pool.execute('DELETE FROM documentos_radicado WHERE numero_radicado = ?', [numero]);
-            await pool.execute('DELETE FROM radicado_dependencias WHERE numero_radicado = ?', [numero]);
-            await pool.execute('DELETE FROM radicados WHERE numero_radicado = ?', [numero]);
-        }
-        for (const archivo of new Set(archivos)) await fs.unlink(archivo);
-        for (const id of usuarios) await pool.execute('DELETE FROM usuarios WHERE id = ?', [id]);
-        if (termino) await pool.execute('DELETE FROM terminos_legales WHERE id = ?', [termino]);
-        if (tipo) await pool.execute('DELETE FROM tipos_tramite WHERE id = ?', [tipo]);
-        for (const id of dependencias) await pool.execute('DELETE FROM dependencias WHERE id = ?', [id]);
-        await pool.end();
     });
     for (const letra of ['A', 'B']) {
         const [resultado] = await pool.execute('INSERT INTO dependencias(nombre, activo) VALUES (?, 1)', [`${prefijo}-${letra}`]);
@@ -113,15 +90,14 @@ test('HTTP y MySQL aislados: paginas, permisos, PDFs, respuesta, Enterado y glob
     pdf.addPage();
     const bytes = await pdf.save();
     const nombreArchivo = `${randomUUID()}.pdf`;
-    const archivo = path.join(__dirname, '..', 'uploads', nombreArchivo);
+    const archivo = path.join(entorno.uploads, nombreArchivo);
     await fs.writeFile(archivo, bytes);
-    archivos.push(archivo);
     await pool.execute(
         `INSERT INTO documentos_radicado(numero_radicado, nombre_archivo, ruta_archivo, tipo_mime, tamano_bytes)
          VALUES (?, 'fixture.pdf', ?, 'application/pdf', ?)`, [numeros[2], nombreArchivo, bytes.length]);
     const server = app.listen(0, '127.0.0.1');
+    entorno.registrarServidor(server);
     await once(server, 'listening');
-    t.after(() => new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve())));
     const url = `http://127.0.0.1:${server.address().port}`;
     const solicitar = (indice, ruta, opciones = {}) => fetch(url + ruta, {
         ...opciones, headers: { ...opciones.headers, Authorization: `Bearer ${tokens[indice]}` }
@@ -159,7 +135,6 @@ test('HTTP y MySQL aislados: paginas, permisos, PDFs, respuesta, Enterado y glob
     assert.equal(respuesta.status, 201);
     const guardada = await (await solicitar(2, `/api/radicados/${numeros[2]}/respuesta`)).json();
     for (const documento of guardada.respuesta.documentos) {
-        archivos.push(path.join(__dirname, '..', 'uploads', documento.ruta_archivo));
         assert.equal((await solicitar(2, `/uploads/${documento.ruta_archivo}`)).status, 200);
     }
     assert.equal((await consulta(2, '&criticos=1')).total, 2);

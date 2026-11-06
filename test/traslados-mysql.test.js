@@ -50,8 +50,11 @@ test('traslados HTTP/MySQL: permisos, concurrencia, reintentos y plazos en base 
     creada = true;
     await admin.query(`USE \`${nombre}\``);
     await admin.query('SET FOREIGN_KEY_CHECKS = 0');
-    for (const ddl of estructura) await admin.query(ddl);
-    await admin.query('SET FOREIGN_KEY_CHECKS = 1');
+    try {
+        for (const ddl of estructura) await admin.query(ddl);
+        // El escenario de 027 pendiente debe existir aunque desarrollo ya la tenga.
+        await admin.query('DROP TABLE IF EXISTS recepciones_internas');
+    } finally { await admin.query('SET FOREIGN_KEY_CHECKS = 1'); }
     if (!tablas.some(tabla => tabla.nombre === 'solicitudes_traslado')) {
         await require('../migrations/023_solicitudes_traslado')(admin);
     }

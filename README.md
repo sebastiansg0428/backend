@@ -716,6 +716,38 @@ reversion real de MySQL.
 
 ## Validacion de integracion MySQL local
 
+Las cuatro suites MySQL son opt-in. Ejecutarlas **por separado** desde el backend,
+despues de disponer de un esquema fuente actualizado; la cuenta local necesita
+permiso para crear/eliminar las bases temporales. No copiar filas reales.
+No requieren detener ni utilizar el servidor HTTP de desarrollo.
+
+```powershell
+npm test
+$env:TEST_INTEGRIDAD_MYSQL = '1'
+node --test test\integridad-mysql.test.js
+Remove-Item Env:\TEST_INTEGRIDAD_MYSQL
+$env:TEST_CONSULTA_MYSQL = '1'
+node --test test\consulta-mysql.test.js
+Remove-Item Env:\TEST_CONSULTA_MYSQL
+$env:TEST_LOGIN_MYSQL = '1'
+node --test test\limites-login-mysql.test.js
+Remove-Item Env:\TEST_LOGIN_MYSQL
+$env:TEST_TRASLADOS_MYSQL = '1'
+node --test test\traslados-mysql.test.js
+Remove-Item Env:\TEST_TRASLADOS_MYSQL
+```
+
+Consulta/login comparten `test-support\mysql-aislado.cjs`: rechaza un pool
+precargado, verifica bases inicialmente vacias y FK sin referencias a desarrollo,
+asigna DB_NAME/UPLOAD_DIR antes de cargar servidor/pool y retira sus recursos.
+Integridad y traslados tambien generan bases nuevas; traslados construye
+deliberadamente el escenario sin 027 antes de ensayar su activacion, aunque
+el esquema fuente ya la tenga. Ninguna omision opt-in equivale a una prueba pasada.
+
+En el frontend ejecutar `npm run test:react`, `npm run test:legacy` y
+`npm run build`. Evitar competir con ensayos de navegador/MySQL en equipos con
+recursos limitados; no aumentar timeouts para esconder fallos.
+
 ### Sembrar 100 radicados en desarrollo
 
 `scripts\sembrar-radicados.js` inserta exactamente 100 registros ficticios en
@@ -794,9 +826,11 @@ Remove-Item Env:TEST_CONSULTA_MYSQL
 
 La medicion solo lee: compara consulta completa y paginada, p50/p95, bytes y
 EXPLAIN, con 10 muestras por rol disponible. No prepara ni modifica datos.
-La prueba MySQL crea fixtures con prefijo aleatorio y los elimina junto con sus
-PDFs y usuarios; preserva registros previos y secuencias de radicado, aunque los
-AUTO_INCREMENT pueden avanzar. Prueba HTTP, MySQL, documentos, respuesta,
+La prueba MySQL crea una base nueva `ventanilla_consulta_<12 hex>` y una carpeta
+uploads temporal independiente. Copia solo DDL de `ventanilla_unica` (o de
+`TEST_SCHEMA_DB=ventanilla_unica_test`), nunca filas ni usuarios reales. No usa
+`DB_NAME` como destino ni reutiliza una base preexistente. Al terminar cierra
+servidor/pool y elimina exclusivamente esa base y carpeta. Prueba HTTP, MySQL, documentos, respuesta,
 Enterado y globales; no sustituye una prueba del navegador contra el backend real.
 Se omite por defecto. Ejecutala por separado, no junto a la suite que simula SQL.
 
@@ -816,8 +850,9 @@ npm start
 ```
 
 En otra terminal, configura el mismo `DB_NAME` y ejecuta `npm test`. La prueba
-MySQL de límites de inicio de sesión es optativa; ejecútala solo contra la base
-aislada:
+MySQL de limites de inicio de sesion es optativa y crea su propia base
+`ventanilla_login_<12 hex>` con el mismo mecanismo de solo DDL; el proceso hijo
+hereda esa base para comprobar limites compartidos. Ejecutarla por separado:
 
 ```powershell
 $env:DB_NAME = 'ventanilla_unica_test'
@@ -826,10 +861,12 @@ node --test test\limites-login-mysql.test.js
 Remove-Item Env:TEST_LOGIN_MYSQL
 ```
 
-Las pruebas HTTP que adjuntan PDFs escriben los archivos en `uploads\` del
-backend, aunque la base sea de prueba. Usa nombres/datos ficticios y elimina
-solo los archivos creados por esa prueba. No ejecutes migraciones sobre la base
-de uso actual para validar una instalación limpia.
+Las integraciones de consulta y traslados usan `UPLOAD_DIR` temporal; no escriben
+en uploads activo. Para pruebas manuales de otro servidor aislado configura
+tambien `UPLOAD_DIR` antes de arrancarlo: cambiar solo `DB_NAME` no aisla disco.
+No ejecutes migraciones sobre la base de uso actual para validar una instalacion
+limpia. Las suites opt-in se ejecutan en procesos separados, sin variables
+`TEST_*_MYSQL` activadas al correr `npm test` con SQL simulado.
 
 ## Origenes permitidos (CORS)
 

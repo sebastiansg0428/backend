@@ -72,7 +72,7 @@ test('024 MySQL: integridad, unicidad, compatibilidad y DDL aislado', {
                     remitente_documento,remitente_telefono,dependencia_destino_id,asunto_documento,
                     fecha_hora_recepcion,destino_todas_dependencias)
                     VALUES (?,'Externa','Persona ficticia','000','000',9101,'Prueba ficticia','2026-01-01 09:00:00',?)`,
-                [numero, Number(global)]);
+                    [numero, Number(global)]);
             }
             for (const numero of ['FIX-024-A', 'FIX-024-B', 'FIX-024-GLOBAL', 'FIX-024-INFO', 'FIX-024-CARRERA']) {
                 await radicar(numero, numero.includes('GLOBAL'));
@@ -173,8 +173,10 @@ test('024 MySQL: integridad, unicidad, compatibilidad y DDL aislado', {
                 assert.deepEqual(historia, { actor_name: 'Nombre historico', dependencia_nombre: 'Oficina historica' });
             });
             await caso.test('dos inserciones concurrentes individuales: una aceptada', async () => {
-                const configuracion = { host: process.env.DB_HOST || 'localhost', user: process.env.DB_USER || 'root',
-                    password: process.env.DB_PASSWORD || '', database: base };
+                const configuracion = {
+                    host: process.env.DB_HOST || 'localhost', user: process.env.DB_USER || 'root',
+                    password: process.env.DB_PASSWORD || '', database: base
+                };
                 const a = await mysql.createConnection(configuracion);
                 const b = await mysql.createConnection(configuracion);
                 try {

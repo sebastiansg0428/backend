@@ -4,27 +4,21 @@ const { randomUUID, randomBytes } = require('node:crypto');
 const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
 const path = require('node:path');
-const pool = require('../db');
-const { reservarIntento, clavesLogin } = require('../limites-login');
+const { crearEntornoMysql } = require('../test-support/mysql-aislado.cjs');
 
 test('MySQL comparte limites entre IPs y procesos, serializa concurrencia y conserva ventanas', {
     skip: process.env.TEST_LOGIN_MYSQL !== '1'
 }, async t => {
+    const entorno = await crearEntornoMysql(t, 'login');
+    const pool = require('../db');
+    entorno.registrarPool(pool);
+    const { reservarIntento, clavesLogin } = require('../limites-login');
     const prefijo = randomUUID();
     const red = `2001:db8:${randomBytes(8).toString('hex').match(/.{4}/g).join(':')}:0`;
     const ip = `${red}:100`;
-    const claves = new Map();
     const reservar = (cuenta, direccion) => {
-        for (const clave of clavesLogin(cuenta, direccion)) claves.set(`${clave.ambito}:${clave.clave}`, clave);
         return reservarIntento(cuenta, direccion);
     };
-    t.after(async () => {
-        try {
-            for (const { ambito, clave } of claves.values()) {
-                await pool.execute('DELETE FROM limites_login WHERE ambito = ? AND clave = ?', [ambito, clave]);
-            }
-        } finally { await pool.end(); }
-    });
     const cuenta = `${prefijo}@example.test`;
     const resultados = await Promise.all(Array.from({ length: 20 }, (_, i) =>
         reservar(cuenta, `${red}:${i + 1}`)));

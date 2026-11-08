@@ -152,6 +152,78 @@ fuera de este nuevo circuito y mantienen su comportamiento anterior.
 | `POST /api/respuestas-internas/:id/apertura` | JSON `{}`, solo origen activo, sin fecha/actor del cliente; replay idempotente |
 | `GET /api/radicados/:numero/recepcion-interna` | Trazabilidad para origen, destino actual y roles centrales |
 
+### Rendimiento y disponibilidad de recepcion interna
+
+Los GET del circuito reutilizan **solo la verificacion estructural** de 027
+durante 30 segundos desde su finalizacion exitosa, por pool y proceso. La primera
+consulta y la primera posterior al vencimiento esperan la verificacion completa;
+las consultas concurrentes comparten ese intento. No hay temporizador permanente,
+uso de una verificacion vencida ni cache de respuestas. Cobertura historica,
+permisos, oficinas activas y datos se consultan en cada peticion.
+
+Las escrituras siguen verificando el esquema completo siempre: guardar una
+respuesta interna usa su conexion transaccional; registrar primera apertura no
+omite la verificacion por existir vigencia de lectura. Esas comprobaciones
+invalidan la vigencia antes y despues, pero no publican una nueva. Se mantienen
+transacciones, permisos, auditoria y primera apertura idempotente.
+
+Si falta 027, es incompatible o falla su comprobacion, el circuito devuelve
+**503** sin aceptar una verificacion anterior como valida. Los errores SQL de
+tabla/columna inexistente o definicion cambiada tambien invalidan la vigencia.
+Tras corregir la causa, la siguiente consulta vuelve a comprobar sin reiniciar
+el servicio ni bloquear otras rutas. La cobertura historica incompleta conserva
+su error **500** existente; no devuelve una bandeja vacia exitosa.
+Esto no detecta todo cambio DDL instantaneamente: un cambio compatible con las
+consultas puede detectarse al vencer los 30 segundos. Tampoco elimina carreras
+entre una comprobacion y un DDL posterior. No modificar el esquema mientras
+hay operaciones reales en curso.
+
+Fuera de `NODE_ENV=production`, el GET exitoso de
+`/api/radicados/:numero/recepcion-interna` incluye `Server-Timing` con
+`estructura`, `cobertura`, `datos` y `ruta`, visibles en DevTools/Network.
+No contiene nombres, SQL ni identificadores. No se agrega a errores, preflight
+ni produccion, ni se cambia CORS. `ruta` empieza despues de la autenticacion
+y termina antes de serializar/enviar JSON: **no equivale al TTFB** del navegador.
+Un TTFB mayor de 350 ms no demuestra por si solo un problema exclusivo de MySQL.
+
+Validacion local aislada con 30 respuestas ficticias y 20 GET por variante:
+mediana HTTP total **130,32 ms sin reutilizacion frente a 4,69 ms con ella**
+(reduccion **96,40%**). La referencia ejecuta el mismo backend/verificador en
+cada GET, no una version anterior completa de la aplicacion. La primera
+consulta midio 337,11 ms y la revalidacion al vencer 166,01 ms; se reportan
+separadamente y no forman parte de las medianas calientes.
+Edge aislado confirmo tiempos reales, datos actualizados sin cache, error 503
+y recuperacion 200 sin reinicio, sin registrar ninguna apertura mediante GET.
+Son resultados de fixtures locales, no garantia de latencia para datos reales,
+otros equipos o toda la aplicacion.
+
+Pruebas dirigidas y regresiones (cada integracion MySQL en proceso separado):
+
+```powershell
+node --test test\estructura-interna.test.js
+$env:TEST_RECEPCION_RENDIMIENTO_MYSQL = '1'
+node --test test\recepcion-rendimiento-mysql.test.js
+Remove-Item Env:\TEST_RECEPCION_RENDIMIENTO_MYSQL
+$env:TEST_TRASLADOS_MYSQL = '1'
+node --test test\traslados-mysql.test.js
+Remove-Item Env:\TEST_TRASLADOS_MYSQL
+npm test
+```
+
+La integracion de rendimiento requiere autorizacion para crear y eliminar su
+base `ventanilla_rendimiento_<12hex>` y uploads temporales. Copia solo DDL
+de `TEST_SCHEMA_DB` (por defecto `ventanilla_unica`), nunca datos ni adjuntos
+activos. Prueba concurrencia, vencimiento exacto con reloj controlado, permisos
+y cobertura sin cache, fallos estructurales, escritura estricta y ausencia de
+`Server-Timing` en produccion. Exige una reduccion de mediana de al menos 50%
+en el ensayo caliente; la variabilidad local puede hacer fallar ese umbral.
+`RECEPCION_PERF_REPORT` permite guardar sus muestras como JSON en una ruta local.
+No activar esta integracion junto con SQL simulado en `npm test`.
+
+Reiniciar el backend para cargar estos cambios de codigo. No se requiere
+modificar el frontend ni aplicar nuevas migraciones; una 027 ausente necesita
+su procedimiento de activacion explicita, no se aplica automaticamente.
+
 La [027](migrations/027_respuestas_internas.js) crea `recepciones_internas`
 con UNIQUE por respuesta, tres FK RESTRICT e indice origen/id. Incorpora las
 respuestas internas historicas con origen valido, `historica=1`, sin primera

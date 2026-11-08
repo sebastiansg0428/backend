@@ -4,6 +4,9 @@ const pool = require('./db');
 const { verificar, verificarCobertura } = require('./migrations/027_respuestas_internas');
 const { registrarEventoRadicado } = require('./audit-log');
 const { revertirTrasError } = require('./transacciones');
+const { performance } = require('node:perf_hooks');
+const { crearGuardiaEstructura, errorEstructura, esErrorEstructural } = require('./estructura-interna');
+const estructura = crearGuardiaEstructura(verificar);
 
 const fallo = (status, message) => Object.assign(new Error(message), { status });
 const internaIndividual = r => String(r.tipo_comunicacion).trim().toLowerCase() === 'interna' &&
@@ -21,18 +24,31 @@ function id(valor) {
     if (!/^[1-9]\d*$/.test(String(valor)) || !Number.isSafeInteger(Number(valor))) throw fallo(400, 'Identificador invalido.');
     return Number(valor);
 }
-async function exigirActivacion(c) {
-    if (!await verificar(c)) throw fallo(503, 'Recepcion interna no activada: falta verificar/aplicar migracion 027.');
+async function exigirActivacion(c, escritura = false, tiempos = null) {
+    let inicio = performance.now();
+    if (escritura) await estructura.exigirEscritura(pool, c);
+    else await estructura.exigir(c);
+    if (tiempos) tiempos.estructura = performance.now() - inicio;
+    inicio = performance.now();
     await verificarCobertura(c);
+    if (tiempos) tiempos.cobertura = performance.now() - inicio;
 }
 async function registrarRecepcionInterna(c, respuesta, r) {
     if (!internaIndividual(r)) return;
-    if (!await verificar(c)) throw fallo(503, 'Recepcion interna no activada: falta verificar/aplicar migracion 027.');
-    await verificarCobertura(c, respuesta);
-    const [origen] = await c.execute('SELECT id FROM dependencias WHERE id=? AND activo=1', [r.dependencia_remitente_id ?? null]);
-    if (!origen.length) throw fallo(409, 'El radicado interno no tiene una dependencia de origen valida.');
-    await c.execute(`INSERT INTO recepciones_internas(respuesta_id,dependencia_origen_id,historica,disponible_en_utc)
-        VALUES (?,?,0,UTC_TIMESTAMP(6))`, [respuesta, origen[0].id]);
+    try {
+        await estructura.exigirEscritura(pool, c);
+        await verificarCobertura(c, respuesta);
+        const [origen] = await c.execute('SELECT id FROM dependencias WHERE id=? AND activo=1', [r.dependencia_remitente_id ?? null]);
+        if (!origen.length) throw fallo(409, 'El radicado interno no tiene una dependencia de origen valida.');
+        await c.execute(`INSERT INTO recepciones_internas(respuesta_id,dependencia_origen_id,historica,disponible_en_utc)
+            VALUES (?,?,0,UTC_TIMESTAMP(6))`, [respuesta, origen[0].id]);
+    } catch (error) {
+        if (esErrorEstructural(error)) {
+            estructura.invalidar(pool);
+            throw errorEstructura(error);
+        }
+        throw error;
+    }
 }
 function presentar(row) {
     const { dependencia_destino_id, origen_activo, destino_activo, ...datos } = row;
@@ -52,8 +68,12 @@ async function obtener(c, usuario, where, valores, bloquear = false) {
 function crearRouterInternas(uploadDir) {
     const router = express.Router();
     const base = '/respuestas-internas';
+    const medirRecepcion = (req, res, next) => {
+        if (process.env.NODE_ENV !== 'production') res.locals.tiemposInternos = { inicio: performance.now() };
+        next();
+    };
     const activacion = async (req, res, next) => {
-        try { await exigirActivacion(pool); next(); } catch (e) { next(e); }
+        try { await exigirActivacion(pool, req.method !== 'GET', res.locals.tiemposInternos); next(); } catch (e) { next(e); }
     };
     router.get(base, activacion, async (req, res, next) => {
         let c;
@@ -82,9 +102,19 @@ function crearRouterInternas(uploadDir) {
         } catch (e) { ({ connection: c, error: e } = await revertirTrasError(c, e)); next(e); }
         finally { if (c) c.release(); }
     });
-    router.get('/radicados/:numero/recepcion-interna', activacion, async (req, res, next) => {
+    router.get('/radicados/:numero/recepcion-interna', medirRecepcion, activacion, async (req, res, next) => {
         try {
+            const inicio = performance.now();
             const r = await obtener(pool, req.usuario, 'rr.numero_radicado=?', [req.params.numero]);
+            const tiempos = res.locals.tiemposInternos;
+            if (tiempos) {
+                res.set('Server-Timing', [
+                    `estructura;dur=${tiempos.estructura.toFixed(2)}`,
+                    `cobertura;dur=${tiempos.cobertura.toFixed(2)}`,
+                    `datos;dur=${(performance.now() - inicio).toFixed(2)}`,
+                    `ruta;dur=${(performance.now() - tiempos.inicio).toFixed(2)}`
+                ].join(', '));
+            }
             res.json({ success: true, recepcion: presentar(r) });
         } catch (e) { next(e); }
     });
@@ -131,7 +161,11 @@ function crearRouterInternas(uploadDir) {
     });
     router.use((e, req, res, next) => {
         if (res.headersSent) return next(e);
-        if (!e.status || e.status >= 500) console.error('Error en respuesta interna:', e.code || e.message);
+        if (esErrorEstructural(e)) {
+            estructura.invalidar(pool);
+            e = errorEstructura(e);
+        }
+        if (!e.status || e.status >= 500) console.error('Error en respuesta interna:', e.cause?.code || e.cause?.message || e.code || e.message);
         res.status(e.status || 500).json({ success: false, message: e.status ? e.message : 'No se pudo confirmar la operacion interna; reintenta.' });
     });
     return router;

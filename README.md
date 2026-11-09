@@ -1,5 +1,14 @@
 # Backend de Ventanilla Unica
 
+## Transiciones de estado
+
+`Recibido` es el estado inicial. Tras avanzar a `En trámite` o `Pendiente`,
+la API rechaza el retorno a `Recibido` con HTTP 409, sin modificar estado,
+fechas ni historial. Se permite alternar `En trámite` y `Pendiente`.
+La regla aplica a administradores y funcionarios; en radicados globales se
+valida el estado de cada asignación. Los cierres `Enterado` y `Respondido`
+conservan sus restricciones.
+
 ## Instalacion nueva y actualizacion
 
 Para una **base vacia**, el punto inicial versionado es

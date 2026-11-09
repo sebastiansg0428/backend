@@ -21,6 +21,54 @@ test('normaliza los estados usados por el frontend y el ENUM de MySQL', () => {
     }
 });
 
+test('PUT estado impide regresar a Recibido sin escrituras para ambos roles y seguimientos', async t => {
+    const usuario = {
+        id: 901, nombre: 'Prueba', rol: 'administrador',
+        dependencia_id: null, dependencia_nombre: 'Prueba', activo: 1
+    };
+    const token = crearSesion(usuario.id);
+    t.after(() => revocarSesiones(usuario.id));
+    t.mock.method(pool, 'execute', async () => [[usuario]]);
+    let estadoAnterior;
+    let global;
+    let rollbacks = 0;
+    const connection = {
+        async beginTransaction() {}, async commit() { assert.fail('No debe confirmar el retorno.'); },
+        async rollback() { rollbacks++; }, release() {},
+        async execute(sql) {
+            assert.match(sql, /FOR UPDATE/);
+            if (sql.includes('SELECT estado, destino_todas_dependencias')) {
+                return [[{ estado: global ? 'Recibido' : estadoAnterior, destino_todas_dependencias: global ? 1 : 0 }]];
+            }
+            if (sql.includes('SELECT rd.id, rd.estado')) {
+                return [[{ id: 501, estado: estadoAnterior, dependencia_id: 7, dependencia_nombre: 'Prueba' }]];
+            }
+            assert.fail(`No debe escribir ni consultar efectos secundarios: ${sql}`);
+        }
+    };
+    t.mock.method(pool, 'getConnection', async () => connection);
+    const server = app.listen(0, '127.0.0.1');
+    await once(server, 'listening');
+    t.after(() => new Promise((resolve, reject) =>
+        server.close(error => error ? reject(error) : resolve())));
+    for (const rol of ['administrador', 'funcionario']) {
+        usuario.rol = rol;
+        usuario.dependencia_id = rol === 'administrador' ? null : 7;
+        for (global of [false, true]) {
+            for (estadoAnterior of ['En trámite', 'Pendiente', ' EN TRAMITE ', ' pendiente ', 'Respondido', 'Enterado']) {
+                const response = await fetch(`http://127.0.0.1:${server.address().port}/api/radicados/RAD-PRUEBA/estado`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+                    body: JSON.stringify({ estado: ' recibido ', radicado_dependencia_id: 501 })
+                });
+                assert.equal(response.status, 409, `${rol}, global=${global}, anterior=${estadoAnterior}`);
+                assert.match((await response.json()).message, /no puede reabrirse|No se puede volver a Recibido/);
+            }
+        }
+    }
+    assert.equal(rollbacks, 24);
+});
+
 test('PUT estado admite estados intermedios sin fabricar respuestas', async t => {
     const usuario = {
         id: 1, nombre: 'Admin de prueba', rol: 'administrador', dependencia_id: null, activo: 1
@@ -188,13 +236,15 @@ test('PUT de un radicado global solo actualiza la asignación de la dependencia 
     await once(server, 'listening');
     t.after(() => new Promise((resolve, reject) =>
         server.close(error => error ? reject(error) : resolve())));
-    const response = await fetch(`http://127.0.0.1:${server.address().port}/api/radicados/RAD-GLOBAL/estado`, {
-        method: 'PUT', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ estado: 'En trámite' })
-    });
-    assert.equal(response.status, 200);
-    const resultado = await response.json();
-    assert.equal(resultado.estado, 'En trámite');
+    for (const estado of ['En trámite', 'Pendiente', 'En trámite']) {
+        const response = await fetch(`http://127.0.0.1:${server.address().port}/api/radicados/RAD-GLOBAL/estado`, {
+            method: 'PUT', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+            body: JSON.stringify({ estado })
+        });
+        assert.equal(response.status, 200);
+        const resultado = await response.json();
+        assert.equal(resultado.estado, estado);
+    }
     assert.equal(estadoDependencia, 'En trámite');
-    assert.equal(escrituras.length, 1);
+    assert.equal(escrituras.length, 3);
 });

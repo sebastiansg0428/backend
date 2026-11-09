@@ -1694,6 +1694,11 @@ app.put(
                 await connection.rollback();
                 return responderError(res, 409, 'El radicado ya tiene un estado final y no puede reabrirse.');
             }
+            if (estadoNuevo === 'Recibido' && obtenerEstadoEditable(estadoAnterior) !== 'Recibido') {
+                reversionIntentada = true;
+                await connection.rollback();
+                return responderError(res, 409, 'No se puede volver a Recibido después de avanzar el estado del radicado.');
+            }
             if (estadoNuevo === 'Enterado' && requiereRespuesta(actuales[0])) {
                 reversionIntentada = true;
                 await connection.rollback();

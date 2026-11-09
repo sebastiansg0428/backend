@@ -39,11 +39,13 @@ test('originales globales no dependen de respuestas; cada oficina conserva priva
         assert.equal(archivo, tercero);
         const restringida = sql.includes('rdx.dependencia_id = ?');
         const oficina = restringida ? permisos[0] : null;
-        assert.deepEqual(permisos, restringida ? [oficina, oficina, oficina] : []);
+        assert.deepEqual(permisos, restringida
+            ? [oficina, oficina, oficina, oficina]
+            : []);
         if (restringida) {
             assert.match(sql, /\)\) AND \(r.destino_todas_dependencias = 0 OR rr.radicado_dependencia_id IN/);
             assert.match(sql, /rdx.numero_radicado = rr.numero_radicado/);
-            assert.match(sql, /\) AND \(r.dependencia_destino_id = \? OR EXISTS/);
+            assert.match(sql, /AND \(\(r\.dependencia_destino_id = \? OR EXISTS/);
         }
         const indice = archivos.indexOf(archivo);
         if (indice < 0) return [[]];

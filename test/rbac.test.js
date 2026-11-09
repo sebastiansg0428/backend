@@ -7,7 +7,8 @@ const { randomUUID } = require('node:crypto');
 const pool = require('../db');
 const app = require('../server');
 const {
-    crearSesion, revocarSesiones, hashPassword, verificarPassword, filtroDependencia, datosUsuario
+    crearSesion, revocarSesiones, hashPassword, verificarPassword, filtroDependencia,
+    filtroLecturaRadicado, datosUsuario
 } = require('../auth');
 
 test('valida usuarios y nunca convierte una dependencia faltante en acceso global', () => {
@@ -23,6 +24,12 @@ test('valida usuarios y nunca convierte una dependencia faltante en acceso globa
             '                  AND rdx.dependencia_id = ?\n' +
             '            ))', valores: [2, 2]
     });
+    const lectura = filtroLecturaRadicado({ rol: 'funcionario', dependencia_id: 2 });
+    assert.match(lectura.sql, /dependencia_remitente_id = \?/);
+    assert.match(lectura.sql, /tipo_comunicacion.*interna/);
+    assert.deepEqual(lectura.valores, [2, 2, 2]);
+    assert.deepEqual(filtroLecturaRadicado({ rol: 'administrador', dependencia_id: null }),
+        { sql: '1 = 1', valores: [] });
 });
 
 test('password se almacena con bcrypt y no admite claves en texto plano', async () => {
@@ -80,7 +87,8 @@ test('RBAC HTTP aplica permisos en listas, alertas, archivos, historial y escrit
         [12, { id: 12, nombre: 'Ventanilla', rol: 'ventanilla', dependencia_id: null, activo: 1 }],
         [13, { id: 13, nombre: 'Funcionario', rol: 'funcionario', dependencia_id: 2, dependencia_nombre: 'Planeacion', activo: 1 }],
         [14, { id: 14, nombre: 'Sin oficina', rol: 'funcionario', dependencia_id: null, activo: 1 }],
-        [15, { id: 15, nombre: 'Funcionaria Hacienda', rol: 'funcionario', dependencia_id: 3, dependencia_nombre: 'Hacienda', activo: 1 }]
+        [15, { id: 15, nombre: 'Funcionaria Hacienda', rol: 'funcionario', dependencia_id: 3, dependencia_nombre: 'Hacienda', activo: 1 }],
+        [16, { id: 16, nombre: 'Funcionaria ajena', rol: 'funcionario', dependencia_id: 4, dependencia_nombre: 'SEDAM', activo: 1 }]
     ]);
     const tokens = new Map([...usuarios.keys()].map(id => [id, crearSesion(id)]));
     t.after(() => { for (const id of usuarios.keys()) revocarSesiones(id); });
@@ -88,7 +96,8 @@ test('RBAC HTTP aplica permisos en listas, alertas, archivos, historial y escrit
         { id: 1, numero_radicado: 'RAD-P', dependencia_destino_id: 2, dependencia_destino: 'Nombre historico' },
         { id: 2, numero_radicado: 'RAD-H', dependencia_destino_id: 3, dependencia_destino: 'Hacienda',
             tipo_comunicacion: 'Interna', dependencia_remitente_id: 2, dependencia_remitente: 'Planeacion' },
-        { id: 3, numero_radicado: 'RAD-S', dependencia_destino_id: null, dependencia_destino: 'Planeacion' },
+        { id: 3, numero_radicado: 'RAD-S', dependencia_destino_id: null, dependencia_destino: 'Planeacion',
+            tipo_comunicacion: 'Externa', dependencia_remitente_id: 2 },
         { id: 4, numero_radicado: 'RAD-G', dependencia_destino_id: null,
             dependencia_destino: 'Todas las dependencias', destino_todas_dependencias: 1 }
     ].map(r => ({
@@ -150,14 +159,19 @@ test('RBAC HTTP aplica permisos en listas, alertas, archivos, historial y escrit
         if (sql.includes('SELECT r.id FROM radicados r')) {
             const esArchivo = sql.includes('FROM documentos_radicado ddoc');
             if (esArchivo) assert.deepEqual(values.slice(0, 3), [values[0], values[0], values[0]]);
-            const dependenciaId = values[esArchivo ? 3 : 1];
+            const indiceFiltro = esArchivo ? 4 : 1;
+            const dependenciaId = values[indiceFiltro];
+            const dependenciaOrigenId = values.at(-1);
             const encontrados = registros.filter(r =>
                 (esArchivo ? r.ruta_archivo === values[0] : r.numero_radicado === values[0]) &&
                 (!sql.includes('r.dependencia_destino_id = ?') ||
-                    r.dependencia_destino_id === dependenciaId || r.destino_todas_dependencias === 1));
+                    r.dependencia_destino_id === dependenciaId || r.destino_todas_dependencias === 1 ||
+                    (String(r.tipo_comunicacion).toLowerCase() === 'interna' &&
+                        r.dependencia_remitente_id === dependenciaOrigenId)));
             return [encontrados];
         }
         if (sql.includes('FROM historial_radicado')) return [[{ campo_modificado: 'estado' }]];
+        if (sql.includes('FROM documentos_radicado WHERE numero_radicado')) return [[]];
         if (sql.includes('FROM dependencias')) return [[{ id: 2, nombre: 'Planeacion' }]];
         throw new Error(`Consulta inesperada: ${sql}`);
     });
@@ -240,8 +254,13 @@ test('RBAC HTTP aplica permisos en listas, alertas, archivos, historial y escrit
         assert.equal(crear.status, 400);
         assert.equal((await crear.json()).message, 'Adjunta al menos un archivo PDF.');
     }
-    assert.equal((await pedir('/api/radicados/RAD-H/historial', 13)).status, 404);
+    assert.equal((await pedir('/api/radicados/RAD-H/historial', 13)).status, 200);
     assert.equal((await pedir('/api/radicados/RAD-P/historial', 13)).status, 200);
+    assert.equal((await pedir('/api/radicados/RAD-H/historial', 15)).status, 200);
+    assert.equal((await pedir('/api/radicados/RAD-H/historial', 16)).status, 404);
+    assert.equal((await pedir('/api/radicados/RAD-S/historial', 13)).status, 404);
+    assert.equal((await pedir('/api/radicados/RAD-H/documentos', 13)).status, 200);
+    assert.equal((await pedir('/api/radicados/RAD-H/documentos', 16)).status, 404);
     for (const id of [11, 12]) {
         assert.equal((await pedir('/api/radicados/RAD-H/historial', id)).status, 200);
     }
@@ -250,7 +269,10 @@ test('RBAC HTTP aplica permisos en listas, alertas, archivos, historial y escrit
             const ruta = `/uploads/${r.ruta_archivo}`;
             assert.equal((await pedir(ruta, undefined, { method })).status, 401);
             const propia = await pedir(ruta, 13, { method });
-            assert.equal(propia.status, r.dependencia_destino_id === 2 || r.destino_todas_dependencias === 1 ? 200 : 404);
+            assert.equal(propia.status,
+                r.dependencia_destino_id === 2 || r.destino_todas_dependencias === 1 ||
+                    (r.tipo_comunicacion === 'Interna' && r.dependencia_remitente_id === 2)
+                    ? 200 : 404);
             if (method === 'GET') {
                 if (propia.status === 200) {
                     assert.equal(await propia.text(), contenidoPDF);

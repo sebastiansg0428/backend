@@ -170,9 +170,21 @@ function filtroDependencia(usuario, alias = 'r') {
         : { sql: '1 = 1', valores: [] };
 }
 
+function filtroLecturaRadicado(usuario, alias = 'r') {
+    const filtro = filtroDependencia(usuario, alias);
+    if (usuario.rol !== 'funcionario') return filtro;
+    return {
+        sql: `(${filtro.sql} OR (
+            LOWER(TRIM(COALESCE(${alias}.tipo_comunicacion, ''))) = 'interna'
+            AND ${alias}.dependencia_remitente_id = ?
+        ))`,
+        valores: [...filtro.valores, usuario.dependencia_id]
+    };
+}
+
 async function autorizarRadicado(req, res, next) {
     try {
-        const filtro = filtroDependencia(req.usuario);
+        const filtro = filtroLecturaRadicado(req.usuario);
         const [rows] = await pool.execute(
             `SELECT r.id FROM radicados r WHERE r.numero_radicado = ? AND ${filtro.sql} LIMIT 1`,
             [req.params.numero_radicado, ...filtro.valores]
@@ -469,7 +481,7 @@ router.patch('/usuarios/:id/estado', autenticar, permitirRoles('administrador'),
 });
 
 module.exports = {
-    router, autenticar, permitirRoles, filtroDependencia, autorizarRadicado,
+    router, autenticar, permitirRoles, filtroDependencia, filtroLecturaRadicado, autorizarRadicado,
     hashPassword, verificarPassword, passwordValido, POLITICA_PASSWORD,
     crearSesion, revocarSesiones, datosUsuario
 };

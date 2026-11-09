@@ -20,7 +20,8 @@ const { router: trasladosRouter, cancelarTrasladoPendiente } = require('./trasla
 const { crearRouterEntregas } = require('./entregas-respuesta');
 const { crearRouterInternas, registrarRecepcionInterna, internaIndividual } = require('./respuestas-internas');
 const {
-    router: authRouter, autenticar, permitirRoles, filtroDependencia, autorizarRadicado
+    router: authRouter, autenticar, permitirRoles, filtroDependencia, filtroLecturaRadicado,
+    autorizarRadicado
 } = require('./auth');
 
 const app = express();
@@ -67,7 +68,7 @@ app.use('/uploads', autenticar, async (req, res, next) => {
             rutaRelativa.startsWith('..') || path.isAbsolute(rutaRelativa)) {
             return responderError(res, 404, 'Archivo no encontrado.');
         }
-        const filtro = filtroDependencia(req.usuario);
+        const filtro = filtroLecturaRadicado(req.usuario);
         const filtroRespuestaGlobal = req.usuario.rol === 'funcionario'
             ? `AND (r.destino_todas_dependencias = 0 OR rr.radicado_dependencia_id IN (
                     SELECT rdx.id FROM radicado_dependencias rdx
@@ -970,6 +971,9 @@ app.get('/api/radicados', async (req, res) => {
         } catch (error) {
             if (!(error instanceof TypeError)) throw error;
             return responderError(res, 400, error.message);
+        }
+        if (opciones.vista === 'generados' && req.usuario.rol !== 'funcionario') {
+            return responderError(res, 403, 'Solo los funcionarios pueden consultar los radicados internos de origen de su dependencia.');
         }
         try {
             return res.json(await consultarPagina(pool, req.usuario, opciones));

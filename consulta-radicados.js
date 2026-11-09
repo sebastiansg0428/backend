@@ -54,15 +54,24 @@ function opcionesConsulta(query) {
     if (!['', 'interna', 'externa', 'sin-tipo'].includes(clase)) {
         throw new TypeError('tipo_comunicacion debe ser interna, externa o sin-tipo.');
     }
+    const vista = query.vista ?? 'recibidos';
+    if (!['recibidos', 'generados'].includes(vista)) {
+        throw new TypeError('vista debe ser recibidos o generados.');
+    }
     return { pagina, limite, busqueda: busqueda.trim(), clase,
-        hoy: booleano('hoy'), criticos: booleano('criticos') };
+        hoy: booleano('hoy'), criticos: booleano('criticos'), vista };
 }
 
 function construirFiltros(usuario, opciones, fecha, dependenciaId = null) {
     const permiso = filtroDependencia(usuario);
     const seguimiento = usuario.rol === 'funcionario' ? usuario.dependencia_id : null;
-    let base = permiso.sql;
-    const valoresBase = [seguimiento, seguimiento, ...permiso.valores];
+    let base = opciones.vista === 'generados' && usuario.rol === 'funcionario'
+        ? `(LOWER(TRIM(COALESCE(r.tipo_comunicacion, ''))) = 'interna'
+            AND r.dependencia_remitente_id = ?)`
+        : permiso.sql;
+    const valoresBase = opciones.vista === 'generados' && usuario.rol === 'funcionario'
+        ? [seguimiento, seguimiento, usuario.dependencia_id]
+        : [seguimiento, seguimiento, ...permiso.valores];
     if (dependenciaId !== null) {
         base += ` AND ((r.destino_todas_dependencias = 1 AND rd.dependencia_id = ?)
             OR (r.destino_todas_dependencias = 0 AND r.dependencia_destino_id = ?))`;
@@ -176,7 +185,7 @@ async function consultarPagina(pool, usuario, opciones, dependenciaId = null, so
             paginas: Math.ceil(total / opciones.limite),
             has_more: inicio + rows.length < total,
             ...(soloAlertas ? { alertas: datos, por_vencer: porVencer, vencidos }
-                : { radicados: datos }) };
+                : { radicados: datos, vista: opciones.vista }) };
     } catch (error) {
         if (enTransaccion) {
             const reversion = await revertirTrasError(connection, error);

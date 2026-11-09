@@ -1162,12 +1162,28 @@ El correo solo es obligatorio para externas.
 Datos ausentes, formatos incorrectos y combinaciones incompatibles retornan
 400; origen inexistente/inactivo retorna 422. Se eliminan los adjuntos de
 solicitudes rechazadas sin guardar el radicado. El origen puede coincidir con
-el destino; nunca otorga visibilidad ni permisos adicionales al funcionario.
+el destino; la consulta de origen solo aplica a radicados internos y a la
+dependencia autenticada. Nunca otorga permisos de escritura ni acceso a
+radicados ajenos.
 
 La respuesta de creación incluye `dependencia_remitente_id`,
 `dependencia_remitente` y `remitente_tipo_persona`, también disponibles en los
 listados. El detalle y los comprobantes muestran el nombre histórico de origen;
 en internas antiguas sin ese dato muestran «No registrada».
+
+### Bandeja de radicados internos generados
+
+La consulta paginada `GET /api/radicados?pagina=1&limite=25&vista=generados`
+permite a un funcionario ver radicados cuya `dependencia_remitente_id` coincide
+con la dependencia de su sesión y cuyo tipo es Interna. No acepta una
+dependencia remitente indicada por el cliente. La vista `recibidos` (valor
+predeterminado) conserva el filtro de destino existente; los roles centrales
+no pueden solicitar la vista `generados`.
+
+La autorización de lectura de detalle, historial, documentos y archivos
+originales también reconoce a la dependencia de origen de un radicado interno.
+Esto no amplía las rutas de escritura ni los permisos de estado o traslado.
+Las comunicaciones externas no obtienen acceso por procedencia institucional.
 
 Despliega frontend/backend coordinadamente y reinicia el backend tras aplicar
 019. Los clientes antiguos que envíen internas sin origen o externas sin tipo

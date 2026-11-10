@@ -20,7 +20,12 @@ const TERMINO = `rd.id AS radicado_dependencia_id,
     rt.fecha_limite_actual AS termino_fecha_limite_actual,
     rt.fecha_respuesta AS termino_fecha_respuesta,
     t.nombre AS termino_nombre_tramite, t.codigo AS termino_codigo_tramite`;
-const SELECT = `r.*, ${TERMINO}, rd.dependencia_id AS seguimiento_dependencia_id,
+const SELECT = `r.*, ${TERMINO},
+    (r.destino_todas_dependencias = 0 AND EXISTS (
+        SELECT 1 FROM solicitudes_traslado st
+        WHERE st.numero_radicado = r.numero_radicado AND st.estado = 'pendiente'
+    )) AS traslado_pendiente,
+    rd.dependencia_id AS seguimiento_dependencia_id,
     d.nombre AS seguimiento_dependencia_nombre`;
 const ORDEN = `ORDER BY COALESCE(r.fecha_hora_recepcion, r.fecha_creacion) DESC,
     r.numero_radicado DESC, COALESCE(rd.id, 0) DESC`;

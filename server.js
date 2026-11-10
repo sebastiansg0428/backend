@@ -1707,6 +1707,17 @@ app.put(
             if (!idAsignacion && estadoNuevo === 'Enterado') {
                 await cancelarTrasladoPendiente(connection, req, numero_radicado);
             }
+            if (!idAsignacion && req.usuario.rol === 'funcionario' && estadoNuevo !== 'Enterado') {
+                const [pendientes] = await connection.execute(
+                    "SELECT id FROM solicitudes_traslado WHERE numero_radicado = ? AND estado = 'pendiente' FOR UPDATE",
+                    [numero_radicado]
+                );
+                if (pendientes.length) {
+                    reversionIntentada = true;
+                    await connection.rollback();
+                    return responderError(res, 409, 'Traslado pendiente de decisión. No puedes cambiar el estado mientras se resuelve la solicitud.');
+                }
+            }
             if (idAsignacion) {
                 await connection.execute(
                     `UPDATE radicado_dependencias SET estado = ?,

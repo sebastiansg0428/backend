@@ -108,6 +108,7 @@ test('PUT estado admite estados intermedios sin fabricar respuestas', async t =>
                 estado = values[0];
                 return [{ affectedRows: 1 }];
             }
+            if (sql.includes('SELECT id FROM solicitudes_traslado')) return [[]];
             if (sql.includes('UPDATE radicado_terminos')) {
                 fechaRespuesta = values[0] === 'Respondido' ? '2026-10-07 11:53:00' : null;
                 return [{ affectedRows: 1 }];

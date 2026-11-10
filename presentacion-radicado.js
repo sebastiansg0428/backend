@@ -11,6 +11,7 @@ function presentarRadicadoEnFecha(radicado, fechaActual) {
     } = radicado;
     const radicadoConTermino = {
         ...datos,
+        traslado_pendiente: Number(datos.traslado_pendiente) === 1,
         estado: seguimiento_estado || datos.estado,
         fecha_enterado: datos.destino_todas_dependencias
             ? seguimiento_fecha_enterado : datos.fecha_enterado,

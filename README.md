@@ -515,6 +515,17 @@ Mientras esta pendiente A sigue responsable, puede responder o registrar
 Enterado cuando corresponda; esa finalizacion cancela la solicitud dentro de
 la misma transaccion. No hay cancelacion manual en esta version.
 
+Con una solicitud pendiente, el funcionario no puede cambiar los estados
+operativos (`Recibido`, `En trámite`, `Pendiente`) del radicado individual:
+`PUT /api/radicados/:numero_radicado/estado` comprueba la solicitud bajo el
+bloqueo transaccional del expediente y devuelve HTTP 409 sin actualizar ni
+auditar el cambio rechazado. El listado devuelve `traslado_pendiente` booleano
+mediante una consulta correlacionada, sin duplicar filas ni consultar por tarjeta.
+Responder y Enterado (solo si no requiere respuesta) conservan su cierre y la
+cancelacion atomica de la solicitud. El administrador mantiene sus permisos;
+Ventanilla sigue sin permiso para editar estados. No afecta globales ni plazos,
+ni revierte estados guardados anteriormente. No requiere una nueva migracion.
+
 Al aprobar, el control central confirma un destino activo distinto de A y
 justifica su decision (incluido cualquier cambio del destino propuesto).
 Solo cambia la dependencia responsable: conserva numero, consecutivo,

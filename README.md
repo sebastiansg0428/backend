@@ -67,6 +67,7 @@ este orden, deteniendote si un paso falla:
 | 025 | Activacion manual segun [seguimiento de entrega](#seguimiento-manual-de-envio-y-entrega-025) |
 | 026 | Fecha automatica y documentos de respuesta; aplicada y verificada en desarrollo con respaldo restaurado y ensayo previo |
 | 027 | Recepcion digital interna y primera apertura; aplicada y verificada en desarrollo, independiente de 026 |
+| 028 | Rol historico del actor; aplicada y verificada en desarrollo con respaldo restaurado y ensayo aislado |
 
 Las migraciones SQL no son todas idempotentes y los cambios DDL pueden quedar
 confirmados aunque un paso posterior falle: no vuelvas a importar toda la
@@ -83,6 +84,42 @@ Actualmente no hay un registro automatico de migraciones aplicadas.
 
 La migracion 021 es incremental y debe aplicarse una sola vez, despues de 020.
 No se conecta ni se ejecuta automaticamente al iniciar el servidor.
+
+### Rol historico del actor (028)
+
+La migracion [028](migrations/028_rol_actor_historial.js) agrega
+`historial_radicado.actor_role` nullable. El registro central de auditoria
+conserva el rol autenticado junto al ID y nombre para los nuevos eventos,
+incluidas solicitudes, aprobaciones y rechazos de traslados, dentro de la
+transaccion existente. No acepta ese rol desde el cuerpo de la solicitud.
+El historial lo devuelve sin consultar el rol actual de la cuenta.
+Los eventos anteriores conservan `NULL`: no se infiere su rol historico.
+Los titulos actuales del frontend no cambian.
+
+**Aplicar 028 antes de usar este backend actualizado.** No se ejecuta al iniciar.
+**Aplicada y verificada en desarrollo local**, con autorizacion, backend detenido,
+respaldo SQL y de adjuntos protegido fuera de Git y restauracion en una base aislada
+nueva. Se compararon datos de las 23 tablas y se preservaron los 25 eventos previos
+con rol NULL. Los cinco adjuntos coinciden con su respaldo mediante SHA-256.
+El ensayo aislado verifico escritura/lectura de los tres roles, repeticion de la
+migracion y rollback de los eventos sinteticos; no se crearon eventos reales.
+La consulta autenticada del historial devolvio 200 y sin autenticacion 401,
+sin exponer IP ni sesiones. La copia aislada se conserva; no se eliminaron bases.
+El verificador acepta DEFAULT NULL tanto de MySQL como de MariaDB, sin aceptar
+un literal de texto `'NULL'`.
+
+Para otras bases, con respaldo verificado, autorizacion y escrituras detenidas:
+
+```powershell
+node migrations\028_rol_actor_historial.js --verificar
+node migrations\028_rol_actor_historial.js --aplicar
+node migrations\028_rol_actor_historial.js --verificar
+```
+
+La verificacion no escribe; la aplicacion es aditiva y repetible sobre la columna
+compatible. Un esquema incompatible se rechaza sin modificarlo. No iniciar el
+backend actualizado contra una base sin 028: fallarian las escrituras de auditoria
+y la consulta del historial.
 
 ## Limpieza de radicados exclusivamente de prueba en desarrollo
 
@@ -488,6 +525,26 @@ La plantilla de respuesta llamada "Traslado por competencia" no ejecuta este flu
 
 ### Contratos
 
+- `GET /api/radicados/:numero_radicado/traslados/resumen`: resumen autenticado,
+  sujeto a la autorizacion de lectura del expediente (no basta conservar un
+  comprobante de traslado). Devuelve `{ success: true, resumen: {
+  total_aprobados, umbral_reiteracion: 3, dependencias_visitadas_ids } }`.
+  Cuenta todas las solicitudes aprobadas, sin paginacion; pendientes, rechazadas
+  y canceladas no suman. Las oficinas se identifican por ID desde movimientos
+  aprobados, primera asignacion registrada, primer origen conocido y destino
+  actual. No usa nombres ni la dependencia remitente de una comunicacion.
+  Los antecedentes anteriores sin evidencia no se reconstruyen.
+  No expone actores, IP, sesiones ni el historial completo.
+- No existe tope acumulado por dependencia o radicado: continua el maximo de
+  una solicitud pendiente por expediente. La interfaz avisa cuando la aprobacion
+  propuesta seria la tercera o posterior, o el destino ya tuvo el radicado.
+  Son avisos informativos basados en la consulta de antecedentes, no bloqueos
+  ni condiciones nuevas del POST. No reinician plazos ni exigen otra confirmacion.
+  Un fallo de consulta se informa con reintento, nunca como cero antecedentes,
+  y no impide continuar con las validaciones habituales.
+  No requiere migraciones ni modificaciones retroactivas de datos.
+  Validacion: 22 pruebas dirigidas de resumen, traslados y auditoria con mocks;
+  SQL del resumen contrastado en MariaDB mediante transaccion de solo lectura.
 - `GET /api/traslados/dependencias`: catalogo autenticado para funcionario,
   Ventanilla y administrador. Devuelve `{ success: true, dependencias }` con
   solo `id`, `nombre` y `activo` de todas las dependencias activas, ordenadas por

@@ -1,7 +1,7 @@
 const express = require('express');
 const crypto = require('crypto');
 const pool = require('./db');
-const { permitirRoles } = require('./auth');
+const { permitirRoles, autorizarRadicado } = require('./auth');
 const { esEstadoFinal } = require('./estados');
 const { registrarEventoRadicado } = require('./audit-log');
 const { revertirTrasError } = require('./transacciones');
@@ -54,6 +54,33 @@ async function comprobante(connection, id) {
     const [rows] = await connection.execute(`SELECT ${COLUMNAS} FROM solicitudes_traslado WHERE id = ?`, [id]);
     return rows[0];
 }
+async function resumenTraslados(connection, numero) {
+    const [movimientos] = await connection.execute(
+        `SELECT origen_id, destino_aprobado_id FROM solicitudes_traslado
+         WHERE numero_radicado = ? AND estado = 'aprobada'`, [numero]);
+    const [antecedentes] = await connection.execute(
+        `SELECT dependencia_destino_id AS dependencia_id FROM radicados WHERE numero_radicado = ?
+         UNION
+         SELECT dependencia_id FROM (
+             SELECT dependencia_id FROM historial_radicado
+             WHERE numero_radicado = ? AND event_type IN ('radicado_asignado', 'radicado_creado')
+               AND dependencia_id IS NOT NULL ORDER BY id LIMIT 1
+         ) AS primera_asignacion
+         UNION
+         SELECT origen_id AS dependencia_id FROM (
+             SELECT origen_id FROM solicitudes_traslado WHERE numero_radicado = ? ORDER BY id LIMIT 1
+         ) AS primer_origen`, [numero, numero, numero]);
+    const visitadas = new Set(antecedentes.map(fila => Number(fila.dependencia_id)));
+    for (const movimiento of movimientos) {
+        visitadas.add(Number(movimiento.origen_id));
+        visitadas.add(Number(movimiento.destino_aprobado_id));
+    }
+    return {
+        total_aprobados: movimientos.length,
+        umbral_reiteracion: 3,
+        dependencias_visitadas_ids: [...visitadas].filter(id => Number.isSafeInteger(id) && id > 0).sort((a, b) => a - b)
+    };
+}
 async function evento(connection, req, solicitud, tipo, motivo, destinoNombre) {
     await registrarEventoRadicado(connection, req, {
         numeroRadicado: solicitud.numero_radicado, tipo,
@@ -104,6 +131,11 @@ async function cancelarTrasladoPendiente(connection, req, numero) {
 }
 
 const router = express.Router();
+router.get('/radicados/:numero_radicado/traslados/resumen',
+    permitirRoles('administrador', 'ventanilla', 'funcionario'), autorizarRadicado, async (req, res) =>
+        transaccion(req, res, async connection => ({
+            body: { resumen: await resumenTraslados(connection, req.params.numero_radicado) }
+        })));
 router.post('/radicados/:numero_radicado/traslados', permitirRoles('funcionario'), async (req, res) =>
     transaccion(req, res, async connection => {
         campos(req.body, ['clave_solicitud', 'destino_sugerido_id', 'motivo']);
@@ -232,4 +264,4 @@ router.get('/traslados/:id', async (req, res) => transaccion(req, res, async con
     return { body: { traslado: rows[0] } };
 }));
 
-module.exports = { router, cancelarTrasladoPendiente };
+module.exports = { router, cancelarTrasladoPendiente, resumenTraslados };

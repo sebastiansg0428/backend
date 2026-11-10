@@ -77,12 +77,13 @@ test('traslados: contratos HTTP, replay y rollback sin MySQL', async t => {
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
-    for (const escenario of ['flujo', 'rechazo', 'conexion', 'inicio', 'insert', 'audit', 'commit', 'rollback']) {
+    for (const escenario of ['flujo', 'administrador', 'rechazo', 'conexion', 'inicio', 'insert', 'audit', 'commit', 'rollback']) {
         await t.test(escenario, async caso => {
             usuario.rol = 'funcionario'; usuario.dependencia_id = 3;
             let radicado = { numero_radicado: 'RAD-FIXTURE', estado: 'En trámite', destino_todas_dependencias: 0, dependencia_destino_id: 3, dependencia_destino: 'Origen' };
             let solicitudes = [];
             let eventos = [];
+            const rolesRegistrados = [];
             const pasos = [];
             const logs = [];
             let copia;
@@ -133,6 +134,8 @@ test('traslados: contratos HTTP, replay y rollback sin MySQL', async t => {
                         }
                         if (sql.includes('INSERT INTO historial_radicado')) {
                             if (['audit', 'rollback'].includes(escenario)) throw new Error('Auditoria fixture');
+                            assert.equal(valores[15], usuario.rol);
+                            rolesRegistrados.push(valores[15]);
                             eventos.push(valores[6]);
                             return [{ affectedRows: 1 }];
                         }
@@ -150,7 +153,7 @@ test('traslados: contratos HTTP, replay y rollback sin MySQL', async t => {
             });
             const datos = { clave_solicitud: randomUUID(), destino_sugerido_id: 4, motivo: 'Revisar competencia de prueba.' };
             const respuesta = await pedir('/radicados/RAD-FIXTURE/traslados', datos);
-            if (!['flujo', 'rechazo'].includes(escenario)) {
+            if (!['flujo', 'administrador', 'rechazo'].includes(escenario)) {
                 assert.equal(respuesta.status, 500);
                 assert.ok(logs.length);
                 if (escenario === 'rollback') {
@@ -170,12 +173,15 @@ test('traslados: contratos HTTP, replay y rollback sin MySQL', async t => {
             const decision = { decision: escenario === 'rechazo' ? 'rechazada' : 'aprobada', motivo: 'Decision central justificada.',
                 ...(escenario === 'rechazo' ? {} : { destino_id: 4 }) };
             assert.equal((await pedir('/traslados/1/decision', decision)).status, 403);
-            usuario.rol = 'ventanilla'; usuario.dependencia_id = null;
+            const rolDecisor = escenario === 'administrador' ? 'administrador' : 'ventanilla';
+            usuario.rol = rolDecisor; usuario.dependencia_id = null;
             assert.equal((await pedir('/traslados/1/decision', decision)).status, 200);
+            usuario.rol = rolDecisor === 'administrador' ? 'ventanilla' : 'administrador';
             assert.equal((await pedir('/traslados/1/decision', decision)).status, 200);
             assert.equal((await pedir('/traslados/1/decision', { ...decision, motivo: 'Otra decision incompatible.' })).status, 409);
             assert.equal(radicado.dependencia_destino_id, escenario === 'rechazo' ? 3 : 4);
             assert.equal(eventos.length, 2);
+            assert.deepEqual(rolesRegistrados, ['funcionario', rolDecisor]);
             usuario.rol = 'funcionario'; usuario.dependencia_id = 3;
             const recibo = (await (await pedir('/traslados/1')).json()).traslado;
             assert.equal('huella_solicitud' in recibo, false);

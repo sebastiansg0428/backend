@@ -28,12 +28,15 @@ async function registrarEventoRadicado(connection, req, evento) {
     if (!Number.isSafeInteger(actorId) || actorId < 1) {
         throw new TypeError('El identificador del actor autenticado no es valido.');
     }
+    if (!['administrador', 'ventanilla', 'funcionario'].includes(req.usuario.rol)) {
+        throw new TypeError('El rol del actor autenticado no es valido.');
+    }
     await connection.execute(
         `INSERT INTO historial_radicado
             (numero_radicado, campo_modificado, valor_anterior, valor_nuevo, usuario, motivo,
              event_type, actor_id, actor_name, dependencia_id, dependencia_nombre,
-             radicado_dependencia_id, session_id, ip_address, ocurrido_en_utc)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+             radicado_dependencia_id, session_id, ip_address, ocurrido_en_utc, actor_role)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
             evento.numeroRadicado,
             evento.tipo,
@@ -49,7 +52,8 @@ async function registrarEventoRadicado(connection, req, evento) {
             evento.radicadoDependenciaId ?? null,
             req.idSesion ?? null,
             typeof req.ip === 'string' && req.ip.length <= 45 ? req.ip : null,
-            fechaUTC()
+            fechaUTC(),
+            req.usuario.rol
         ]
     );
 }

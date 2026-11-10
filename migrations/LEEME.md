@@ -25,11 +25,33 @@ con una conexión nueva y despliega frontend/backend juntos; reinicia el backend
 Las nuevas internas exigen origen activo y las externas tipo de persona/correo;
 las jurídicas exigen además razón social/NIT. No cambia el acceso por destino.
 
-La secuencia completa para instalaciones nuevas es 000-027, incluyendo los
-pasos JavaScript 002, 009, 020, 023, 024, 025, 026 y 027 en su posición; consulta el
+La secuencia completa para instalaciones nuevas es 000-028, incluyendo los
+pasos JavaScript 002, 009, 020, 023, 024, 025, 026, 027 y 028 en su posición; consulta el
 [README principal](../README.md). No reapliques esa secuencia a una base existente.
 La validación estática de migraciones no equivale a ejecutar toda la instalación
 en una base aislada.
+
+## Rol historico del actor (028)
+
+[028_rol_actor_historial.js](028_rol_actor_historial.js) requiere las columnas
+de auditoria de 021. `--verificar` consulta el esquema sin escribir; `--aplicar`
+agrega `actor_role VARCHAR(20) NULL DEFAULT NULL` si falta y verifica el resultado.
+Repetir sobre una columna compatible no la altera; una incompatible se rechaza.
+El DDL tiene commit implicito: no puede revertirse con rollback de la aplicacion.
+No actualiza eventos existentes ni deduce roles desde nombres o cuentas actuales.
+
+**Aplicada y verificada en desarrollo local**, con backend detenido, respaldo
+actualizado protegido y restaurado en una base aislada nueva. Se ensayaron los
+tres roles y la repeticion; los 25 eventos previos quedaron con rol NULL,
+conservando los datos de las 23 tablas y los cinco archivos adjuntos.
+La copia aislada y el respaldo se conservan fuera de Git.
+El verificador reconoce DEFAULT NULL de MySQL/MariaDB, no el literal `'NULL'`.
+En otras bases requiere autorizacion, respaldo verificado y escrituras detenidas.
+Aplicar antes de iniciar el backend
+actualizado, que necesita la columna para escribir y consultar el historial.
+Los nuevos eventos guardan el rol autenticado junto al ID/nombre; los antiguos
+mantienen NULL y los titulos actuales de la interfaz permanecen intactos.
+Consultar los comandos en el [README principal](../README.md).
 
 ## Recepcion digital interna (027)
 

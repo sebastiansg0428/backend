@@ -21,7 +21,10 @@ function fixture({ falloInsercion = false, duplicado = false, falloRollback = fa
             }
             if (sql.includes('DATABASE()')) return [[{ nombre: base }]];
             if (sql.includes('FROM dependencias')) return [[{ id: 6, nombre: 'Oficina de Planeacion' }]];
-            if (sql.includes('FROM usuarios')) return [[{ id: 2, nombre: 'Actor ficticio' }]];
+            if (sql.includes('FROM usuarios')) {
+                assert.match(sql, /SELECT id, nombre, rol/);
+                return [[{ id: 2, nombre: 'Actor ficticio', rol: 'ventanilla' }]];
+            }
             if (sql.includes('FROM tipos_tramite')) return [[{
                 id: 1, nombre: 'Solicitud ficticia', termino_legal_id: 1,
                 dias: 10, tipo_dias: 'habiles', fundamento_legal: 'Regla de prueba'
@@ -91,6 +94,7 @@ test('seeding confirma exactamente 100 radicados, snapshots y 300 eventos sin PD
     const eventos = f.escrituras.filter(({ sql }) => sql.includes('INSERT INTO historial_radicado'));
     assert.equal(eventos.length, 300);
     assert.ok(eventos.every(({ valores }) => valores[12] === null && valores[13] === null));
+    assert.ok(eventos.every(({ valores }) => valores[15] === 'ventanilla'));
     assert.ok(eventos.every(({ valores }) => valores[5].includes('SEED automatizado')));
     assert.ok(f.escrituras.every(({ sql }) => !/secuencias_radicado|documentos_|respuestas_/.test(sql)));
     assert.equal(new Set(radicados.map(({ valores }) => valores[0])).size, 100);

@@ -40,6 +40,7 @@ test('inspeccion detecta esquema incompleto sin DML y carga no lo migra', async 
     } };
     const esquema = await inspeccionar(connection);
     assert.ok(esquema.faltantes.includes('historial_radicado.ocurrido_en_utc'));
+    assert.ok(esquema.faltantes.includes('historial_radicado.actor_role'));
     assert.ok(esquema.faltantes.includes('radicados.requiere_respuesta'));
     assert.ok(esquema.faltantes.includes('idx_historial_sesion'));
     await assert.rejects(cargar(connection, esquema), /Esquema incompatible/);
@@ -59,6 +60,7 @@ test('insercion confirma radicado y eventos en la misma transaccion y sesion sin
             if (sql.includes('INSERT INTO historial_radicado')) {
                 pasos.push('evento');
                 sesiones.push(valores[12]);
+                assert.equal(valores[15], 'administrador');
             } else {
                 assert.match(sql, /INSERT INTO radicados/);
                 assert.deepEqual(valores, ['CARGA-PRUEBA-1']);

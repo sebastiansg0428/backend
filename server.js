@@ -1145,7 +1145,7 @@ app.get('/api/radicados/:numero_radicado/historial', autorizarRadicado, async (r
     try {
         const [rows] = await pool.execute(
             `SELECT id, campo_modificado, valor_anterior, valor_nuevo, usuario, motivo,
-                    creado_en, event_type, actor_id, actor_name, dependencia_id,
+                    creado_en, event_type, actor_id, actor_name, actor_role, dependencia_id,
                     dependencia_nombre, radicado_dependencia_id, ocurrido_en_utc
              FROM historial_radicado
              WHERE numero_radicado = ? AND (? IS NULL OR id < ?)

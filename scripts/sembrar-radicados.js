@@ -45,7 +45,7 @@ async function inspeccionar(connection, opciones, hoy) {
         'SELECT id, nombre FROM dependencias WHERE nombre = ? AND activo = 1', [DESTINO]);
     if (dependencias.length !== 1) throw new Error('No existe una unica Oficina de Planeacion activa.');
     const [actores] = await connection.execute(
-        "SELECT id, nombre FROM usuarios WHERE rol = 'ventanilla' AND activo = 1 ORDER BY id LIMIT 1");
+        "SELECT id, nombre, rol FROM usuarios WHERE rol = 'ventanilla' AND activo = 1 ORDER BY id LIMIT 1");
     if (!actores.length) throw new Error('Se requiere un usuario activo de Ventanilla para atribuir el seeding.');
     const [terminos] = await connection.execute(
         `SELECT t.id, t.nombre, l.id AS termino_legal_id, l.dias, l.tipo_dias, l.fundamento_legal

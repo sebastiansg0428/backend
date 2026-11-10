@@ -5,7 +5,7 @@ const { registrarEventoRadicado } = require('../audit-log');
 
 const BASE = 'ventanilla_unica_test';
 const SQL_HISTORIAL = `SELECT id, campo_modificado, valor_anterior, valor_nuevo, usuario, motivo,
-    creado_en, event_type, actor_id, actor_name, dependencia_id,
+    creado_en, event_type, actor_id, actor_name, actor_role, dependencia_id,
     dependencia_nombre, radicado_dependencia_id, ocurrido_en_utc
     FROM historial_radicado
     WHERE numero_radicado = ? AND (? IS NULL OR id < ?)
@@ -57,7 +57,7 @@ async function inspeccionar(connection) {
     for (const tabla of ['radicados', 'historial_radicado']) {
         if (!tablas.some(fila => fila.TABLE_NAME === tabla && fila.ENGINE === 'InnoDB')) faltantes.push(`${tabla}: requiere InnoDB`);
     }
-    for (const columna of ['event_type', 'actor_id', 'actor_name', 'dependencia_id',
+    for (const columna of ['event_type', 'actor_id', 'actor_name', 'actor_role', 'dependencia_id',
         'dependencia_nombre', 'radicado_dependencia_id', 'session_id', 'ip_address', 'ocurrido_en_utc']) {
         if (!columnas.some(fila => fila.TABLE_NAME === 'historial_radicado' && fila.COLUMN_NAME === columna)) {
             faltantes.push(`historial_radicado.${columna}`);
@@ -108,7 +108,7 @@ async function insertar(connection, columnas, numero, cantidadEventos) {
              VALUES (${campos.map(() => '?').join(',')})`, campos.map(campo => valores[campo]));
         for (let i = 0; i < cantidadEventos; i++) {
             await registrarEventoRadicado(connection, {
-                usuario: { id: 1, nombre: 'Actor ficticio de carga' },
+                usuario: { id: 1, nombre: 'Actor ficticio de carga', rol: 'administrador' },
                 idSesion, ip: '192.0.2.1'
             }, {
                 numeroRadicado: numero, tipo: 'estado_cambiado',

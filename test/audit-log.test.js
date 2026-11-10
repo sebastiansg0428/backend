@@ -15,7 +15,7 @@ test('el evento guarda actor, snapshot, correlacion segura e instante UTC', asyn
         }
     };
     const req = {
-        usuario: { id: 71, nombre: 'Funcionario Prueba' },
+        usuario: { id: 71, nombre: 'Funcionario Prueba', rol: 'funcionario' },
         idSesion: 'e31cbbe5-71d1-46f2-9800-2ed430fca710',
         ip: '198.51.100.12',
         headers: { authorization: 'Bearer no-debe-persistirse', 'x-forwarded-for': '203.0.113.8' }
@@ -41,6 +41,7 @@ test('el evento guarda actor, snapshot, correlacion segura e instante UTC', asyn
         4, 'Planeación', 99, req.idSesion, req.ip
     ]);
     assert.match(values[14], /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3}$/);
+    assert.equal(values[15], 'funcionario');
     assert.equal(values.includes('Bearer no-debe-persistirse'), false);
     assert.equal(values.includes(req.headers['x-forwarded-for']), false);
 });
@@ -63,11 +64,11 @@ test('historial pagina con cursor y omite IP y sesion de la API', async t => {
     const token = crearSesion(usuario.id);
     t.after(() => revocarSesiones(usuario.id));
     const filas = [
-        { id: 30, event_type: 'estado_cambiado', actor_name: 'Ana', dependencia_nombre: 'Planeación',
+        { id: 30, event_type: 'estado_cambiado', actor_name: 'Ana', actor_role: 'funcionario', dependencia_nombre: 'Planeación',
             ocurrido_en_utc: '2026-10-25 16:00:00.123000', ip_address: '192.0.2.1', session_id: 'secreto-1' },
         { id: 29, event_type: 'radicado_asignado', actor_name: 'Luis', dependencia_nombre: 'Hacienda',
             ocurrido_en_utc: '2026-10-25 15:00:00.000000', ip_address: '192.0.2.2', session_id: 'secreto-2' },
-        { id: 28, event_type: null, campo_modificado: 'regla_respuesta', usuario: '7',
+        { id: 28, event_type: null, actor_role: null, campo_modificado: 'regla_respuesta', usuario: '7',
             creado_en: '2024-01-01 08:00:00', ip_address: null, session_id: null }
     ];
     const consultas = [];
@@ -75,6 +76,7 @@ test('historial pagina con cursor y omite IP y sesion de la API', async t => {
         if (sql.includes('FROM usuarios u')) return [[usuario]];
         if (sql.includes('SELECT r.id FROM radicados r')) return [[{ id: 1 }]];
         assert.match(sql, /FROM historial_radicado/);
+        assert.match(sql, /actor_role/);
         assert.doesNotMatch(sql, /ip_address|session_id/);
         assert.match(sql, /ORDER BY id DESC\s+LIMIT \?/);
         consultas.push(values);
@@ -91,6 +93,7 @@ test('historial pagina con cursor y omite IP y sesion de la API', async t => {
     assert.equal(primera.status, 200);
     const paginaUno = await primera.json();
     assert.deepEqual(paginaUno.historial.map(fila => fila.id), [30, 29]);
+    assert.equal(paginaUno.historial[0].actor_role, 'funcionario');
     assert.equal(paginaUno.next_cursor, 29);
     assert.equal(paginaUno.has_more, true);
     assert.equal(JSON.stringify(paginaUno).includes('192.0.2.'), false);
@@ -98,6 +101,7 @@ test('historial pagina con cursor y omite IP y sesion de la API', async t => {
     const segunda = await fetch(`${url}?limite=2&cursor=29`, { headers });
     const paginaDos = await segunda.json();
     assert.deepEqual(paginaDos.historial.map(fila => fila.id), [28]);
+    assert.equal(paginaDos.historial[0].actor_role, null);
     assert.equal(paginaDos.next_cursor, null);
     assert.equal(paginaDos.has_more, false);
     assert.deepEqual(consultas, [

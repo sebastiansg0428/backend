@@ -9,6 +9,7 @@ const { opcionesCargaPdf, validarArchivoPdf, validarContenidoPdf } = require('./
 const { registrarEventoRadicado } = require('./audit-log');
 const { revertirTrasError } = require('./transacciones');
 const { verificar: verificar026 } = require('./migrations/026_documentos_entrega');
+const { verificar: verificar029 } = require('./migrations/029_fecha_real_entrega');
 
 const fallo = (status, message) => Object.assign(new Error(message), { status });
 const sha = contenido => createHash('sha256').update(contenido).digest('hex');
@@ -24,6 +25,14 @@ function texto(valor, nombre, min, max) {
     }
     return valor.trim();
 }
+async function fechaRespuestaEpoch(c, respuesta) {
+    const [[referencia]] = await c.execute('SELECT UNIX_TIMESTAMP(fecha_envio) AS fecha_respuesta_epoch FROM respuestas_radicado WHERE id=?', [respuesta]);
+    const valor = referencia?.fecha_respuesta_epoch;
+    if (valor === null || valor === undefined || !Number.isFinite(Number(valor)) || Number(valor) <= 0) {
+        throw fallo(409, 'La fecha de la respuesta no esta disponible para validar la actuacion.');
+    }
+    return Number(valor);
+}
 function validarCampos(body) {
     if (typeof body.clave !== 'string' || !/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(body.clave)) throw fallo(400, 'Clave de intento UUID v4 invalida.');
     if (!['correo_electronico', 'presencial', 'mensajeria'].includes(body.canal) ||
@@ -36,7 +45,27 @@ function validarCampos(body) {
         observaciones: texto(body.observaciones ?? '', 'Observaciones', body.resultado === 'intento_fallido' ? 10 : 0, 2000),
     };
 }
+function fechaActuacion(valor, segundos = false) {
+    const patron = segundos ? /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?$/ : /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/;
+    if (typeof valor !== 'string' || !patron.test(valor) || Number(valor.slice(0, 4)) < 1000) {
+        throw fallo(400, 'Fecha de actuacion invalida; usa fecha y hora de Bogota.');
+    }
+    const civil = valor.length === 16 ? `${valor}:00` : valor;
+    const fecha = new Date(`${civil}-05:00`);
+    if (!Number.isFinite(fecha.getTime()) || fecha.getTime() > Date.now() ||
+        new Date(fecha.getTime() - 5 * 3600000).toISOString().slice(0, 19) !== civil) {
+        throw fallo(400, 'Fecha invalida o futura.');
+    }
+    return fecha.toISOString().replace('T', ' ').replace('Z', '');
+}
 function validarRegistro(body) {
+    if (body?.version === '3') {
+        const { fecha_actuacion, justificacion_fecha_anterior, ...base } = body;
+        const datos = validarRegistro({ ...base, version: '2' });
+        const fecha = fechaActuacion(fecha_actuacion, true);
+        return { ...datos, version: 3, fecha,
+            justificacion_fecha_anterior: texto(justificacion_fecha_anterior ?? '', 'Justificacion de fecha anterior', 0, 2000) };
+    }
     if (body?.version === '2') {
         const permitidos = ['version', 'clave', 'canal', 'resultado', 'destinatario', 'destino', 'observaciones', 'documentos_respuesta'];
         if (Object.keys(body).some(k => !permitidos.includes(k))) throw fallo(400, 'Campos de entrega no permitidos; la fecha es automatica.');
@@ -52,19 +81,16 @@ function validarRegistro(body) {
     const permitidos = ['clave', 'canal', 'resultado', 'destinatario', 'destino', 'fecha_actuacion', 'observaciones'];
     if (!body || Object.keys(body).some(c => !permitidos.includes(c))) throw fallo(400, 'Campos de entrega no permitidos.');
     const { observaciones, ...campos } = validarCampos(body);
-    if (typeof body.fecha_actuacion !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(body.fecha_actuacion) ||
-        Number(body.fecha_actuacion.slice(0, 4)) < 1000) throw fallo(400, 'Fecha de actuacion invalida; usa fecha y hora de Bogota.');
-    const fecha = new Date(`${body.fecha_actuacion}:00-05:00`);
-    if (!Number.isFinite(fecha.getTime()) || fecha.getTime() > Date.now() ||
-        new Date(fecha.getTime() - 5 * 3600000).toISOString().slice(0, 16) !== body.fecha_actuacion) throw fallo(400, 'Fecha invalida o futura.');
     return {
         ...campos,
-        fecha: fecha.toISOString().replace('T', ' ').replace('Z', ''),
+        fecha: fechaActuacion(body.fecha_actuacion),
         observaciones,
     };
 }
 function resumen(eventos) {
-    const vigentes = eventos.filter(e => !e.anulado_en_utc);
+    const vigentes = eventos.filter(e => !e.anulado_en_utc).sort((a, b) =>
+        String(b.fecha_actuacion_utc || '').localeCompare(String(a.fecha_actuacion_utc || '')) ||
+        Number(b.id || 0) - Number(a.id || 0));
     return vigentes.find(e => e.resultado === 'entrega_acreditada')?.resultado ||
         vigentes[0]?.resultado || 'pendiente_de_envio';
 }
@@ -90,13 +116,25 @@ async function respuestaElegible(c, numero, bloquear = false) {
     if (!respuestas.length) throw fallo(404, 'No existe respuesta institucional para entregar.');
     return respuestas[0].id;
 }
-async function comprobante(c, id, automatico = false) {
+async function metadatosFecha(c, registros, disponible) {
+    if (!disponible || !registros.length) return registros.map(r => ({
+        ...r, fecha_real_declarada: false, justificacion_fecha_anterior: null,
+    }));
+    const [fechas] = await c.execute(`SELECT registro_id,justificacion_fecha_anterior FROM entregas_fecha_real
+        WHERE registro_id IN (${registros.map(() => '?').join(',')})`, registros.map(r => r.id));
+    return registros.map(r => {
+        const fecha = fechas.find(f => f.registro_id === r.id);
+        return { ...r, fecha_real_declarada: Boolean(fecha),
+            justificacion_fecha_anterior: fecha?.justificacion_fecha_anterior ?? null };
+    });
+}
+async function comprobante(c, id, automatico = false, fechaReal = false) {
     const [registros] = await c.execute(`SELECT ${COLUMNAS} FROM registros_entrega_respuesta WHERE id=?`, [id]);
     const [evidencias] = await c.execute(
         `SELECT e.id,e.nombre_archivo,e.tamano_bytes,e.sha256,${automatico ? "COALESCE(o.origen,'legado')" : "'legado'"} AS origen
          FROM evidencias_entrega e ${automatico ? 'LEFT JOIN documentos_entrega_origen o ON o.evidencia_id=e.id' : ''}
          WHERE e.registro_id=? ORDER BY e.id`, [id]);
-    return { ...registros[0], evidencias };
+    return { ...(await metadatosFecha(c, registros, fechaReal))[0], evidencias };
 }
 async function documentosRespuesta(c, respuesta, uploadDir) {
     const [rows] = await c.execute(`SELECT id,nombre_archivo,ruta_archivo,tamano_bytes
@@ -140,6 +178,7 @@ function crearRouterEntregas(uploadDir) {
                 WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME IN ('registros_entrega_respuesta','evidencias_entrega')`);
             if (Number(estado.n) !== 2) throw fallo(503, 'Seguimiento de entrega no activado: falta aplicar/verificar migracion 025.');
             req.entregaAutomatica = await verificar026(pool);
+            req.entregaFechaReal = req.entregaAutomatica && await verificar029(pool);
             next();
         } catch (error) { next(error); }
     });
@@ -150,7 +189,9 @@ function crearRouterEntregas(uploadDir) {
             c = await pool.getConnection();
             const respuesta = await respuestaElegible(c, req.params.numero_radicado);
             const documentos = await documentosRespuesta(c, respuesta, uploadDir);
-            res.json({ success: true, documentos: documentos.map(({ contenido, ...d }) => d) });
+            const fechaRespuesta = await fechaRespuestaEpoch(c, respuesta);
+            res.json({ success: true, fecha_respuesta_epoch: fechaRespuesta,
+                documentos: documentos.map(({ contenido, ...d }) => d) });
         } catch (error) { next(error); }
         finally { if (c) c.release(); }
     });
@@ -167,19 +208,20 @@ function crearRouterEntregas(uploadDir) {
                 MAX(resultado='entrega_acreditada' AND anulado_en_utc IS NULL) AS acreditada
                 FROM registros_entrega_respuesta WHERE respuesta_id=?`, [respuesta]);
             const [ultimo] = await c.execute(`SELECT resultado FROM registros_entrega_respuesta
-                WHERE respuesta_id=? AND anulado_en_utc IS NULL ORDER BY id DESC LIMIT 1`, [respuesta]);
+                WHERE respuesta_id=? AND anulado_en_utc IS NULL ORDER BY fecha_actuacion_utc DESC,id DESC LIMIT 1`, [respuesta]);
             const [rows] = await c.execute(`SELECT ${COLUMNAS} FROM registros_entrega_respuesta
-                WHERE respuesta_id=? ORDER BY id DESC LIMIT 25 OFFSET ?`, [respuesta, (pagina - 1) * 25]);
+                WHERE respuesta_id=? ORDER BY fecha_actuacion_utc DESC,id DESC LIMIT 25 OFFSET ?`, [respuesta, (pagina - 1) * 25]);
             const evidencias = rows.length ? (await c.execute(`SELECT e.id,e.registro_id,e.nombre_archivo,e.tamano_bytes,e.sha256,
                 ${req.entregaAutomatica ? "COALESCE(o.origen,'legado')" : "'legado'"} AS origen
                 FROM evidencias_entrega e ${req.entregaAutomatica ? 'LEFT JOIN documentos_entrega_origen o ON o.evidencia_id=e.id' : ''}
                 WHERE e.registro_id IN (${rows.map(() => '?').join(',')}) ORDER BY e.id`,
             rows.map(row => row.id)))[0] : [];
-            const registros = rows.map(row => ({ ...row, evidencias: evidencias.filter(e => e.registro_id === row.id)
+            const registros = (await metadatosFecha(c, rows, req.entregaFechaReal)).map(row => ({ ...row, evidencias: evidencias.filter(e => e.registro_id === row.id)
                 .map(({ registro_id, ...e }) => e) }));
             await c.commit();
             const total = Number(conteo.total);
-            res.json({ success: true, automatico_disponible: req.entregaAutomatica, resumen: Number(conteo.acreditada) ? 'entrega_acreditada' : resumen(ultimo),
+            res.json({ success: true, automatico_disponible: req.entregaAutomatica,
+                fecha_real_disponible: Boolean(req.entregaFechaReal), resumen: Number(conteo.acreditada) ? 'entrega_acreditada' : resumen(ultimo),
                 registros, total, pagina, paginas: Math.ceil(total / 25) });
         } catch (error) {
             ({ connection: c, error } = await revertirTrasError(c, error)); next(error);
@@ -225,15 +267,21 @@ function crearRouterEntregas(uploadDir) {
                 if (replay[0].huella !== huella || replay[0].respuesta_id !== respuesta) throw fallo(409, 'El intento ya corresponde a otros datos o evidencias.');
                 if (req.entregaAutomatica) {
                     const [contrato] = await c.execute('SELECT registro_id FROM entregas_confirmacion WHERE registro_id=?', [replay[0].id]);
-                    if (Boolean(contrato.length) !== (datos.version === 2)) throw fallo(409, 'El intento corresponde a otra version del formulario.');
+                    if (Boolean(contrato.length) !== [2, 3].includes(datos.version)) throw fallo(409, 'El intento corresponde a otra version del formulario.');
                 }
-                const registro = await comprobante(c, replay[0].id, req.entregaAutomatica);
+                const registro = await comprobante(c, replay[0].id, req.entregaAutomatica, req.entregaFechaReal);
                 await c.rollback();
                 await limpiar(req.files);
                 return res.json({ success: true, registro });
             }
-            if (datos.version !== 2) throw fallo(409, 'Actualiza la interfaz: los nuevos registros usan fecha automatica del servidor.');
+            if (datos.version !== 3) throw fallo(409, 'Actualiza la interfaz: los nuevos registros requieren fecha real de la actuacion.');
             if (!req.entregaAutomatica) throw fallo(503, 'Registro automatico no activado: falta aplicar/verificar migracion 026.');
+            if (!req.entregaFechaReal) throw fallo(503, 'Fecha real no activada: falta aplicar/verificar migracion 029.');
+            const fechaRespuesta = await fechaRespuestaEpoch(c, respuesta);
+            if (new Date(`${datos.fecha.replace(' ', 'T')}Z`).getTime() < fechaRespuesta * 1000 &&
+                datos.justificacion_fecha_anterior.length < 10) {
+                throw fallo(400, 'La actuacion anterior a la respuesta requiere justificacion de 10 a 2000 caracteres.');
+            }
             if (datos.resultado === 'entrega_acreditada' && !archivos.length) throw fallo(400, 'Acreditar entrega requiere evidencia adicional de recepcion, no solo el PDF de respuesta.');
             const fuentes = await documentosRespuesta(c, respuesta, uploadDir);
             const seleccion = datos.documentos.map(d => {
@@ -259,11 +307,13 @@ function crearRouterEntregas(uploadDir) {
             }
             const [insertado] = await c.execute(`INSERT INTO registros_entrega_respuesta
                 (respuesta_id,canal,resultado,destinatario,destino,fecha_actuacion_utc,observaciones,actor_id,actor_nombre,clave,huella,creado_en_utc)
-                VALUES (?,?,?,?,?,UTC_TIMESTAMP(6),?,?,?,?,?,UTC_TIMESTAMP(6))`,
-            [respuesta, datos.canal, datos.resultado, datos.destinatario, datos.destino, datos.observaciones,
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,UTC_TIMESTAMP(6))`,
+            [respuesta, datos.canal, datos.resultado, datos.destinatario, datos.destino, datos.fecha, datos.observaciones,
                 req.usuario.id, req.usuario.nombre, datos.clave, huella]);
             nuevoId = insertado.insertId;
             await c.execute('INSERT INTO entregas_confirmacion(registro_id) VALUES (?)', [nuevoId]);
+            await c.execute('INSERT INTO entregas_fecha_real(registro_id,justificacion_fecha_anterior) VALUES (?,?)',
+                [nuevoId, datos.justificacion_fecha_anterior || null]);
             for (const archivo of archivos) {
                 const [evidencia] = await c.execute(`INSERT INTO evidencias_entrega
                 (registro_id,nombre_archivo,ruta_archivo,tipo_mime,tamano_bytes,sha256) VALUES (?,?,?,'application/pdf',?,?)`,
@@ -273,7 +323,7 @@ function crearRouterEntregas(uploadDir) {
             }
             await registrarEventoRadicado(c, req, { numeroRadicado: req.params.numero_radicado,
                 tipo: 'entrega_registrada', valorNuevo: datos.resultado, motivo: `Registro de envio/entrega #${nuevoId} (${datos.canal}).` });
-            const registro = await comprobante(c, nuevoId, true);
+            const registro = await comprobante(c, nuevoId, true, true);
             commitIniciado = true;
             await c.commit();
             confirmado = true;
@@ -318,7 +368,7 @@ function crearRouterEntregas(uploadDir) {
                 await registrarEventoRadicado(c, req, { numeroRadicado: req.params.numero_radicado,
                     tipo: 'entrega_anulada', motivo: `Anulacion del registro #${registroId}.`, valorNuevo: 'anulada' });
             }
-            const registro = await comprobante(c, registroId, req.entregaAutomatica);
+            const registro = await comprobante(c, registroId, req.entregaAutomatica, req.entregaFechaReal);
             await c.commit();
             res.json({ success: true, registro });
         } catch (error) {

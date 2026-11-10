@@ -179,6 +179,7 @@ async function ejecutar() {
         await require('../migrations/024_integridad_referencial').migrarIntegridad(connection, { aplicar: true });
         await require('../migrations/025_seguimiento_entrega').migrarEntregas(connection, { aplicar: true });
         await require('../migrations/026_documentos_entrega').migrarDocumentosEntrega(connection, { aplicar: true });
+        await require('../migrations/029_fecha_real_entrega').migrarFechaRealEntrega(connection, { aplicar: true });
         await require('../migrations/027_respuestas_internas').migrarRespuestasInternas(connection, { aplicar: true });
         const uploads = path.join(carpeta, 'origen-uploads');
         const fixture = path.join(carpeta, 'fixture.json');
@@ -220,6 +221,7 @@ async function ejecutar() {
         await connection.query(`USE \`${destino}\``);
         assert.equal(await require('../migrations/025_seguimiento_entrega').verificar(connection), true);
         assert.equal(await require('../migrations/026_documentos_entrega').verificar(connection), true);
+        assert.equal(await require('../migrations/029_fecha_real_entrega').verificar(connection), true);
         assert.equal((await require('../migrations/027_respuestas_internas').migrarRespuestasInternas(connection)).estado, 'aplicada');
         await ejecutarProceso(process.execPath, [worker, 'verificar', fixture], {
             env: { ...process.env, DB_NAME: destino, UPLOAD_DIR: restaurados }

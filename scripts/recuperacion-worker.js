@@ -109,12 +109,15 @@ async function ejecutar() {
                 method: 'POST', body: respuestaForm
             })).status, 201);
             fixture.claveEntrega = randomUUID();
+            fixture.fechaEntrega = new Date(Date.now() - 5 * 3600000).toISOString().slice(0, 19);
             const catalogo = await (await solicitar(0, `/api/radicados/${fixture.respuesta.radicado}/entregas/documentos-respuesta`)).json();
             fixture.documentosEntrega = catalogo.documentos.map(d => ({ id: d.id, sha256: d.sha256 }));
             const formEntrega = new FormData();
             for (const [k, v] of Object.entries({ clave: fixture.claveEntrega, canal: 'correo_electronico',
                 resultado: 'entrega_acreditada', destinatario: 'Persona ficticia', destino: 'fixture@example.test',
-                version: '2', documentos_respuesta: JSON.stringify(fixture.documentosEntrega), observaciones: 'Constancia exclusivamente ficticia.' })) formEntrega.append(k, v);
+                version: '3', fecha_actuacion: fixture.fechaEntrega,
+                justificacion_fecha_anterior: 'Actuacion exclusivamente ficticia para restauracion.',
+                documentos_respuesta: JSON.stringify(fixture.documentosEntrega), observaciones: 'Constancia exclusivamente ficticia.' })) formEntrega.append(k, v);
             formEntrega.append('archivos', new Blob([bytesEvidencia], { type: 'application/pdf' }), 'evidencia-ficticia.pdf');
             const entrega = await solicitar(0, `/api/radicados/${fixture.respuesta.radicado}/entregas`, { method: 'POST', body: formEntrega });
             assert.equal(entrega.status, 201, await entrega.clone().text());
@@ -182,7 +185,9 @@ async function ejecutar() {
         const repetirEntrega = new FormData();
         for (const [k, v] of Object.entries({ clave: fixture.claveEntrega, canal: 'correo_electronico',
             resultado: 'entrega_acreditada', destinatario: 'Persona ficticia', destino: 'fixture@example.test',
-            version: '2', documentos_respuesta: JSON.stringify(fixture.documentosEntrega), observaciones: 'Constancia exclusivamente ficticia.' })) repetirEntrega.append(k, v);
+            ...(fixture.fechaEntrega ? { version: '3', fecha_actuacion: fixture.fechaEntrega,
+                justificacion_fecha_anterior: 'Actuacion exclusivamente ficticia para restauracion.' } : { version: '2' }),
+            documentos_respuesta: JSON.stringify(fixture.documentosEntrega), observaciones: 'Constancia exclusivamente ficticia.' })) repetirEntrega.append(k, v);
         repetirEntrega.append('archivos', new Blob([bytesEvidencia], { type: 'application/pdf' }), 'evidencia-ficticia.pdf');
         const replayEntrega = await solicitar(0, rutaEntregas, { method: 'POST', body: repetirEntrega });
         assert.equal(replayEntrega.status, 200);

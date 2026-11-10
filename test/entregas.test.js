@@ -34,3 +34,30 @@ test('contrato 2 rechaza fecha cliente, valida y canoniza IDs/hash sin generar t
         { documentos_respuesta: JSON.stringify(Array.from({ length: 6 }, (_, i) => ({ id: i + 1, sha256: 'a'.repeat(64) }))) },
     ]) assert.throws(() => validarRegistro({ ...body, ...cambios }), { status: 400 });
 });
+
+test('contrato 3 conserva fecha real Bogota-UTC con segundos y justificacion sin alterar contrato2', () => {
+    const body = { ...datos(), version: '3', documentos_respuesta: '[]',
+        fecha_actuacion: '2026-01-05T23:59:37', justificacion_fecha_anterior: ' Explicacion de la fecha. ' };
+    const r = validarRegistro(body);
+    assert.equal(r.version, 3);
+    assert.equal(r.fecha, '2026-01-06 04:59:37.000');
+    assert.equal(r.justificacion_fecha_anterior, 'Explicacion de la fecha.');
+    assert.equal(validarRegistro({ ...body, justificacion_fecha_anterior: '' }).justificacion_fecha_anterior, '');
+    for (const cambios of [
+        { fecha_actuacion: '2026-02-30T10:00:00' }, { fecha_actuacion: '2999-01-01T10:00:00' },
+        { fecha_actuacion: '2026-01-05T23:59:60' }, { fecha_actuacion: '2026-01-05T23:59Z' },
+        { fecha_actuacion: '' }, { fecha_actuacion: '0001-01-01T10:00' },
+        { justificacion_fecha_anterior: 'a'.repeat(2001) }, { creado_en_utc: '2026-01-01' },
+    ]) assert.throws(() => validarRegistro({ ...body, ...cambios }), { status: 400 });
+});
+
+test('resumen ordena por actuacion e ID, ignora anulados y prioriza acreditacion', () => {
+    const eventos = [
+        { id: 8, resultado: 'enviado', fecha_actuacion_utc: '2026-01-01 10:00:00' },
+        { id: 2, resultado: 'intento_fallido', fecha_actuacion_utc: '2026-01-03 10:00:00' },
+        { id: 9, resultado: 'entrega_acreditada', fecha_actuacion_utc: '2026-01-02 10:00:00', anulado_en_utc: 'fecha' },
+    ];
+    assert.equal(resumen(eventos), 'intento_fallido');
+    assert.equal(resumen([...eventos, { id: 3, resultado: 'enviado', fecha_actuacion_utc: eventos[1].fecha_actuacion_utc }]), 'enviado');
+    assert.equal(resumen([...eventos, { id: 1, resultado: 'entrega_acreditada', fecha_actuacion_utc: '2025-01-01' }]), 'entrega_acreditada');
+});

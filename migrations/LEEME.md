@@ -25,11 +25,45 @@ con una conexión nueva y despliega frontend/backend juntos; reinicia el backend
 Las nuevas internas exigen origen activo y las externas tipo de persona/correo;
 las jurídicas exigen además razón social/NIT. No cambia el acceso por destino.
 
-La secuencia completa para instalaciones nuevas es 000-028, incluyendo los
-pasos JavaScript 002, 009, 020, 023, 024, 025, 026, 027 y 028 en su posición; consulta el
+La secuencia completa para instalaciones nuevas es 000-029, incluyendo los
+pasos JavaScript 002, 009, 020, 023, 024, 025, 026, 027, 028 y 029 en su posición; consulta el
 [README principal](../README.md). No reapliques esa secuencia a una base existente.
 La validación estática de migraciones no equivale a ejecutar toda la instalación
 en una base aislada.
+
+## Fecha real de envio/entrega (029)
+
+[029_fecha_real_entrega.js](029_fecha_real_entrega.js) requiere 026 compatible.
+Agrega `entregas_fecha_real` con PK/FK RESTRICT al registro y justificacion
+nullable, e indice `idx_entrega_fecha(respuesta_id,fecha_actuacion_utc,id)`.
+No altera fechas, registros historicos ni documentos. Los nuevos registros usan
+fecha real declarada en UTC y conservan la fecha de creacion automatica separada.
+El historial se ordena por actuacion e ID descendentes, con acreditacion vigente
+prioritaria en el resumen.
+
+**Aplicada y verificada en desarrollo local**, con autorizacion, backend detenido,
+respaldo SQL y de adjuntos protegido, restauracion comprobada y ensayo aislado.
+Las 23 tablas anteriores conservaron filas y hashes; los diez archivos adjuntos
+quedaron intactos. La nueva tabla quedo vacia, sin backfill, y se verificaron
+PK, FK e indice. Repetir en la copia aislada no introdujo cambios.
+El respaldo y la copia aislada se conservan fuera de Git.
+El usuario detiene y reinicia manualmente el backend.
+En otras bases requiere autorizacion adicional, respaldo verificado y escrituras
+detenidas. Ensayar primero en una copia aislada.
+El DDL hace commit implicito: un fallo parcial requiere inspeccion antes de
+continuar; no repetir a ciegas ni eliminar estructuras para reintentar.
+La aplicacion repetida sobre esquema compatible no introduce cambios.
+
+```powershell
+node migrations\029_fecha_real_entrega.js --verificar
+# Solo tras autorizacion y respaldo verificado:
+node migrations\029_fecha_real_entrega.js --aplicar
+node migrations\029_fecha_real_entrega.js --verificar
+```
+
+Sin 029 el nuevo formulario se deshabilita y el backend rechaza nuevos registros
+con 503; el historial, descargas, anulaciones y replay existentes siguen disponibles.
+Activar frontend/backend juntos y reiniciar el backend despues de verificar.
 
 ## Rol historico del actor (028)
 

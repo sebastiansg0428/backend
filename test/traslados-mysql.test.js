@@ -61,6 +61,7 @@ test('traslados HTTP/MySQL: permisos, concurrencia, reintentos y plazos en base 
     await require('../migrations/024_integridad_referencial').migrarIntegridad(admin, { aplicar: true });
     await require('../migrations/025_seguimiento_entrega').migrarEntregas(admin, { aplicar: true });
     await require('../migrations/026_documentos_entrega').migrarDocumentosEntrega(admin, { aplicar: true });
+    await require('../migrations/029_fecha_real_entrega').migrarFechaRealEntrega(admin, { aplicar: true });
     process.env.DB_NAME = nombre;
     process.env.UPLOAD_DIR = uploads;
     pool = require('../db');
@@ -324,7 +325,9 @@ test('traslados HTTP/MySQL: permisos, concurrencia, reintentos y plazos en base 
         assert.equal(Number(conteo.n), 2);
     });
 
-    const entregaDatos = (cambios = {}) => ({ version: '2', documentos_respuesta: '[]', clave: randomUUID(), canal: 'correo_electronico', resultado: 'enviado',
+    const entregaDatos = (cambios = {}) => ({ version: '3', fecha_actuacion: new Date(Date.now() - 5 * 3600000).toISOString().slice(0, 19),
+        justificacion_fecha_anterior: 'Actuacion ficticia registrada para la prueba.',
+        documentos_respuesta: '[]', clave: randomUUID(), canal: 'correo_electronico', resultado: 'enviado',
         destinatario: 'Persona ficticia', destino: 'fixture@example.test',
         observaciones: '', ...cambios });
     const pdfEntrega = await PDFDocument.create();
@@ -569,7 +572,7 @@ test('traslados HTTP/MySQL: permisos, concurrencia, reintentos y plazos en base 
         finally { await admin.query("ALTER TABLE documentos_entrega_origen MODIFY origen ENUM('documento_respuesta','evidencia_adicional') NOT NULL"); }
         assert.equal(await verificar(admin), true);
     });
-    await t.test('hora MySQL automatica y copias independientes; replay conserva fecha aun sin fuente', async () => {
+    await t.test('fecha real y registro MySQL independientes; replay conserva ambas aun sin fuente', async () => {
         const { numero, documentos, seleccion } = await conDocumentos();
         const datos = entregaDatos({ documentos_respuesta: seleccion });
         const [[antes]] = await pool.query("SELECT DATE_FORMAT(UTC_TIMESTAMP(6),'%Y-%m-%d %H:%i:%s.%f') AS ahora");
@@ -580,8 +583,9 @@ test('traslados HTTP/MySQL: permisos, concurrencia, reintentos y plazos en base 
         for (const r of recibos) assert.deepEqual(r, recibos[0]);
         const r = recibos[0].registro;
         const [[despues]] = await pool.query("SELECT DATE_FORMAT(UTC_TIMESTAMP(6),'%Y-%m-%d %H:%i:%s.%f') AS ahora");
-        assert.equal(r.fecha_actuacion_utc, r.creado_en_utc);
-        assert.ok(r.fecha_actuacion_utc >= antes.ahora && r.fecha_actuacion_utc <= despues.ahora);
+        assert.equal(r.fecha_actuacion_utc, new Date(`${datos.fecha_actuacion}-05:00`).toISOString().replace('T', ' ').replace('Z', '000'));
+        assert.ok(r.creado_en_utc >= antes.ahora && r.creado_en_utc <= despues.ahora);
+        assert.equal(r.fecha_real_declarada, true);
         assert.equal(r.evidencias.length, 1); assert.equal(r.evidencias[0].origen, 'documento_respuesta');
         assert.equal(r.evidencias[0].sha256, documentos[0].sha256);
         const [[original]] = await pool.execute('SELECT ruta_archivo FROM documentos_respuesta WHERE id=?', [documentos[0].id]);
@@ -597,7 +601,7 @@ test('traslados HTTP/MySQL: permisos, concurrencia, reintentos y plazos en base 
             const descarga = await pedir(0, `/api/radicados/${numero}/entregas/${r.id}/evidencias/${r.evidencias[0].id}`);
             assert.equal(descarga.status, 200); assert.deepEqual(Buffer.from(await descarga.arrayBuffer()), bytes);
         } finally { await fs.rename(`${originalPath}.oculto`, originalPath); }
-        assert.equal((await entregar(2, numero, { ...datos, fecha_actuacion: '2000-01-01T10:00' })).status, 400);
+        assert.equal((await entregar(2, numero, { ...datos, fecha_actuacion: '2000-01-01T10:00' })).status, 409);
         assert.equal((await entregar(2, numero, { ...datos, documentos_respuesta: '[]' })).status, 409);
     });
     await t.test('5 originales mas 5 evidencias; oficio solo o reupload identico no acredita', async () => {

@@ -68,6 +68,7 @@ este orden, deteniendote si un paso falla:
 | 026 | Fecha automatica y documentos de respuesta; aplicada y verificada en desarrollo con respaldo restaurado y ensayo previo |
 | 027 | Recepcion digital interna y primera apertura; aplicada y verificada en desarrollo, independiente de 026 |
 | 028 | Rol historico del actor; aplicada y verificada en desarrollo con respaldo restaurado y ensayo aislado |
+| 029 | Fecha real de envio/entrega; aplicada y verificada en desarrollo con respaldo restaurado y ensayo aislado |
 
 Las migraciones SQL no son todas idempotentes y los cambios DDL pueden quedar
 confirmados aunque un paso posterior falle: no vuelvas a importar toda la
@@ -334,21 +335,29 @@ API autenticada:
 
 | Metodo/ruta | Contrato |
 | --- | --- |
-| `GET /api/radicados/:numero/entregas?pagina=1` | `success,automatico_disponible,resumen,registros,total,pagina,paginas`, 25 por pagina, orden de registro descendente |
-| `GET /api/radicados/:numero/entregas/documentos-respuesta` | Catalogo autorizado `documentos`: ID, nombre, bytes, SHA256; sin rutas fisicas |
-| `POST /api/radicados/:numero/entregas` | multipart: `version=2`, `clave` UUIDv4, `canal`, `resultado`, `destinatario` (150), `destino` (500), `observaciones` (2000), `documentos_respuesta` JSON `[{id,sha256}]`, `archivos` nuevos |
+| `GET /api/radicados/:numero/entregas?pagina=1` | `success,automatico_disponible,fecha_real_disponible,resumen,registros,total,pagina,paginas`, 25 por pagina, fecha de actuacion descendente y desempate ID descendente |
+| `GET /api/radicados/:numero/entregas/documentos-respuesta` | Catalogo autorizado `documentos`: ID, nombre, bytes, SHA256; `fecha_respuesta_epoch` del registro institucional, sin rutas fisicas |
+| `POST /api/radicados/:numero/entregas` | multipart: `version=3`, `clave` UUIDv4, `canal`, `resultado`, `destinatario` (150), `destino` (500), `fecha_actuacion`, `justificacion_fecha_anterior` (2000), `observaciones` (2000), `documentos_respuesta` JSON `[{id,sha256}]`, `archivos` nuevos |
 | `POST /api/radicados/:numero/entregas/:id/anulacion` | JSON `{ "motivo": "Correccion documentada..." }` |
 | `GET /api/radicados/:numero/entregas/:id/evidencias/:evidencia` | PDF, acceso actual al expediente |
 
-La fecha ya no se digita: MySQL genera `UTC_TIMESTAMP(6)` al confirmar el primer
-registro, igual para fecha de actuacion y creacion. Se muestra en Bogota; no
-permite fechar retrospectivamente la actuacion. El contrato 2 rechaza una fecha
-enviada por el navegador. Los historicos mantienen sus fechas y el contrato 1
-solo admite replay de intentos existentes, nunca nuevos registros manuales.
+Con 029, la fecha real es obligatoria, editable y no futura:
+`YYYY-MM-DDTHH:mm[:ss]` en Bogota, guardada en UTC. Si precede al registro de la
+respuesta exige justificacion de 10 a 2000 caracteres; no se cambia la respuesta.
+`creado_en_utc` sigue siendo automatico e inmutable (`UTC_TIMESTAMP(6)`).
+Ambas fechas se muestran en Bogota y permanecen iguales en el reintento exacto.
+Los registros nuevos usan contrato 3 y metadata `fecha_real_declarada` y
+`justificacion_fecha_anterior`; los contratos 1 y 2 solo permiten replay de
+intentos existentes. Los historicos conservan sus fechas y significado original:
+no se reconstruyen fechas reales ni se rellenan metadatos retroactivamente.
+La interfaz recarga el catalogo sin cambiar originales: conserva las selecciones
+por ID/SHA256 y deja sin seleccionar los documentos nuevos o modificados.
+PDF adicional obligatorio solo al acreditar; para envio o intento fallido es opcional.
 El destino electronico
 debe ser correo valido; presencial/mensajeria exige lugar/direccion.
 Resumen: ninguna actuacion vigente = `pendiente_de_envio`; acreditacion vigente
-prioritaria; de lo contrario el ultimo registro no anulado.
+prioritaria; de lo contrario el ultimo registro no anulado por fecha de actuacion
+y, en igualdad, ID descendente.
 
 Registro, evidencia y auditoria se confirman en la misma transaccion, con bloqueo
 radicado/respuesta. Respuestas 201 nuevo, 200 reintento exacto, 400 datos/carga,
@@ -360,7 +369,8 @@ Auditoria conserva `entrega_registrada` y `entrega_anulada` sin contactos comple
 Ante 500 o perdida de conexion, reintentar **los mismos datos, UUID y PDF**.
 El mismo intento conserva fecha y copias persistidas, incluso si luego falta
 el original. La huella incluye IDs/hashes seleccionados en orden canonico,
-campos y archivos nuevos, no la hora generada ni nombres fisicos aleatorios.
+campos (incluidas fecha real y justificacion en contrato 3) y archivos nuevos,
+no la hora de registro generada ni nombres fisicos aleatorios.
 La interfaz conserva el intento mientras sigue abierta; al recargar/cerrar,
 consultar historial antes de empezar otro. Si COMMIT es incierto y tampoco puede
 comprobarse persistencia, se conservan PDF y se informa el error: MySQL y disco

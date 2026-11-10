@@ -328,6 +328,22 @@ test('administrador gestiona catalogos con baja logica y conserva permisos, refe
     })).status, 200);
     assert.equal(tipos.find(t => t.id === idSinPlazo).requiere_respuesta, 1);
     assert.deepEqual(terminos, terminosSinCambio);
+    const primerPlazo = {
+        tipo_tramite_id: idSinPlazo, dias: 12, tipo_dias: 'habiles',
+        fundamento_legal: 'Regla de prueba para primera configuracion', vigente_desde: '2099-01-01'
+    };
+    for (const cambios of [
+        { dias: 0 }, { tipo_dias: 'otro' }, { fundamento_legal: '' }, { vigente_desde: '2000-01-01' }
+    ]) {
+        assert.equal((await pedir('/terminos-legales', 0, 'POST', { ...primerPlazo, ...cambios })).status, 400);
+        assert.deepEqual(terminos, terminosSinCambio);
+    }
+    assert.equal((await pedir('/terminos-legales', 0, 'POST', primerPlazo)).status, 201);
+    assert.deepEqual(terminos.at(-1), {
+        id: terminos.at(-1).id, ...primerPlazo, vigente_hasta: null
+    });
+    assert.deepEqual(terminos.slice(0, -1), terminosSinCambio);
+    assert.deepEqual(radicado, copiaRadicado);
     const tiposAntes = structuredClone(tipos);
     const terminosAntes = structuredClone(terminos);
     falloTermino = true;

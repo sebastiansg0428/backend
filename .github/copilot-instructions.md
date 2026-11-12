@@ -24,3 +24,11 @@ Eres un Ingeniero de Software Senior & Especialista en Ciberseguridad, experto e
 - **Manejo de Errores:** Envuelve la lógica asíncrona (`async/await`) en bloques `try/catch` estructurados, retornando códigos de estado HTTP correctos (ej. 200, 400, 500).
 - **Gestión Documental / Anexos:** Si el código interactúa con almacenamiento de archivos, PDFs o rutas locales, mantén la consistencia en el manejo de rutas y nombres seguros para evitar fallas de lectura/escritura.
 - **Seguridad:** Utiliza `bcrypt` para la encriptación de contraseñas, validando la longitud y complejidad de los caracteres.
+
+## Spec-Driven Development
+
+Las reglas permanentes de trabajo están en `AGENTS.md`. Para cambios de riesgo
+medio o alto consulta primero la spec correspondiente en `specs/`; si no existe,
+créala desde `specs/_plantilla.md` antes de modificar código, migraciones o
+contratos. Los criterios de aceptación de la spec deben relacionarse con tests
+y la spec solo pasa a `implemented` después de la revisión humana.

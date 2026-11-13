@@ -96,6 +96,24 @@ debe verificar la base antes de eliminar evidencias.
 - conservar foco y cierre correcto del diálogo;
 - liberar `ObjectURL` al terminar una descarga o vista previa.
 
+# Pulido UX conservador
+
+La vista de registro conserva el flujo único dentro del diálogo de respuesta,
+sin introducir pasos nuevos ni cambiar el contrato del API. La interfaz debe:
+
+- diferenciar visualmente el estado actual, avisos informativos, errores y
+  acciones principales sin depender solo del color;
+- presentar las cuatro secciones del formulario con títulos y separadores
+  claros, manteniendo dos columnas en escritorio y una en pantallas estrechas;
+- conservar el pie de acciones visible mientras se desplaza el contenido del
+  modal y mantener objetivos táctiles utilizables en móvil;
+- mantener nombres largos de archivos legibles mediante ajuste de línea, sin
+  desbordar el diálogo;
+- conservar el foco al entrar al formulario, volver al historial y mostrar
+  mensajes de éxito o error;
+- asociar mensajes y controles a su contexto semántico, manteniendo la
+  navegación por teclado y los estados `status`/`alert` existentes.
+
 # Criterios de aceptación
 
 ## Escenario 1: registro válido

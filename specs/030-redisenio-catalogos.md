@@ -46,6 +46,15 @@ las reglas de negocio actuales.
 - El control “Mostrar inactivos” conserva su comportamiento actual.
 - Editar, crear, activar, inactivar y configurar plazo conservan las rutas,
   payloads, confirmaciones y estados de proceso existentes.
+- Al editar un registro, el panel completo de edición se desplaza suavemente al
+  inicio visible de la pantalla, dejando su encabezado y la primera sección
+  visibles; el primer campo recibe el foco sin provocar un desplazamiento
+  adicional.
+- El editor distingue visualmente entre creación y edición mediante un texto de
+  estado, un título específico del catálogo y una descripción contextual.
+- El formulario de tipos de trámite presenta las secciones `Datos básicos`,
+  `Clasificación y respuesta` y `Plazo legal inicial`, con títulos semánticos y
+  descripciones legibles en escritorio y móvil.
 - Los estados de carga, error, vacío y ausencia de coincidencias son visibles y
   comprensibles.
 
@@ -108,6 +117,27 @@ de resultados, sin cambiar el contrato de API.
 
 **Entonces** se conservan las rutas, payloads, confirmaciones y mensajes del
 flujo actual.
+
+## Escenario 3a: edición de una fila inferior
+
+**Dado que** el administrador selecciona una dependencia ubicada al final de la
+tabla, como `Víctimas`
+
+**Cuando** pulsa `Editar`
+
+**Entonces** el panel de edición queda alineado al inicio visible del viewport,
+su encabezado y la sección `Datos básicos` quedan visibles, el primer campo
+queda enfocado y la página no realiza un segundo salto.
+
+## Escenario 3b: jerarquía del editor
+
+**Dado que** el administrador abre el editor de dependencias o tipos de trámite
+
+**Cuando** el formulario está en modo creación o edición
+
+**Entonces** muestra un estado contextual (`Nuevo registro` o `Edición de
+catálogo`), un título específico (`Nueva`, `Nuevo` o `Editar`) y secciones con
+encabezados accesibles sin desbordamiento horizontal.
 
 ## Escenario 4: responsive y accesibilidad
 

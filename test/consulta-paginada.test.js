@@ -36,7 +36,7 @@ test('consulta valida limites y filtros sin aceptar arreglos ni comodines implic
     assert.deepEqual(enviadosSedam.valoresBase, [4, 4, 4]);
 });
 
-test('pagina mantiene contadores globales, limita detalles y calcula alertas en lotes', async () => {
+test('pagina mantiene contadores globales, limita detalles y calcula alertas en una consulta', async () => {
     const hoy = obtenerFechaLocal(new Date(), 'hoy');
     const rows = Array.from({ length: 501 }, (_, i) => ({
         numero_radicado: `RAD-${String(501 - i).padStart(4, '0')}`,
@@ -52,9 +52,8 @@ test('pagina mantiene contadores globales, limita detalles y calcula alertas en 
         async execute(sql, valores) {
             consultas.push({ sql, valores });
             if (sql.includes('AS coincide_filtros')) {
-                assert.match(sql, /LIMIT 250 OFFSET \?/);
-                const offset = valores.at(-1);
-                return [rows.slice(offset, offset + 250)];
+                assert.doesNotMatch(sql, /LIMIT 250 OFFSET/);
+                return [rows];
             }
             if (sql.includes('COALESCE(SUM')) return [[{ total: 1000, hoy: 600 }]];
             if (sql.includes('COUNT(*)')) return [[{ total: 700 }]];
@@ -79,7 +78,9 @@ test('pagina mantiene contadores globales, limita detalles y calcula alertas en 
     assert.equal(alertas.alertas.length, 25);
     assert.equal(commits, 2);
     assert.equal(liberadas, 2);
-    assert.ok(consultas.filter(c => c.sql.includes('AS coincide_filtros')).every(c => !c.sql.includes('r.*')));
+    const consultasCandidatos = consultas.filter(c => c.sql.includes('AS coincide_filtros'));
+    assert.equal(consultasCandidatos.length, 2);
+    assert.ok(consultasCandidatos.every(c => !c.sql.includes('r.*')));
 });
 
 test('consulta revierte y explicita fallos de lectura y rollback', async () => {

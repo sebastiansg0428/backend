@@ -6,6 +6,7 @@
 | FEAT-029-REPARACION | [Reparación segura del estado parcial](029-reparacion-estado-parcial.md) | implemented | alto | MySQL, CLI |
 | FEAT-ENTREGA | [Registro de entrega](registro-entrega.md) | baseline | alto | MySQL, API, frontend |
 | FEAT-CONSULTA | [Consulta de radicados](contrato-consulta-radicados.md) | baseline | alto | API, frontend |
+| FEAT-036 | [Optimización de alertas en bandeja](036-optimizacion-alertas-bandeja.md) | completed | medio | MySQL, API |
 
 `baseline` indica que la spec documenta comportamiento existente. `implemented`
 indica que la lógica, los tests y la evidencia de verificación ya fueron

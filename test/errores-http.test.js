@@ -22,7 +22,7 @@ test('clasifica errores de cuerpo y carga sin exponer rutas ni contenido', async
     await once(server, 'listening');
     t.after(() => new Promise((resolve, reject) => server.close(e => e ? reject(e) : resolve())));
     const url = `http://127.0.0.1:${server.address().port}`;
-    for (const [body, status] of [['{', 400], [JSON.stringify({ dato: 'x'.repeat(110 * 1024) }), 413]]) {
+    for (const [body, status] of [['{', 400], [JSON.stringify({ dato: 'x'.repeat(1100 * 1024) }), 413]]) {
         const respuesta = await fetch(url + '/api/auth/login', {
             method: 'POST', headers: { 'Content-Type': 'application/json' }, body
         });
@@ -31,6 +31,13 @@ test('clasifica errores de cuerpo y carga sin exponer rutas ni contenido', async
         assert.equal(resultado.success, false);
         assert.doesNotMatch(resultado.message, /SyntaxError|node_modules|position|dato/);
     }
+    const cuerpoUrlencoded = new URLSearchParams({ dato: 'x'.repeat(1100 * 1024) });
+    const respuestaUrlencoded = await fetch(url + '/api/auth/login', {
+        method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: cuerpoUrlencoded
+    });
+    assert.equal(respuestaUrlencoded.status, 413);
+    assert.equal((await respuestaUrlencoded.json()).success, false);
     for (const headers of [
         { 'Content-Type': 'application/json', 'Content-Encoding': 'unsupported' },
         { 'Content-Type': 'application/json; charset=iso-8859-1' }

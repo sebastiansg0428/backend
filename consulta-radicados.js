@@ -142,29 +142,24 @@ async function consultarPagina(pool, usuario, opciones, dependenciaId = null, so
         let vencidos = 0;
         const claves = [];
         const inicio = (opciones.pagina - 1) * opciones.limite;
-        let offset = 0;
-        while (true) {
-            const [rows] = await connection.execute(
-                `SELECT r.numero_radicado, r.estado, r.requiere_respuesta,
-                    r.destino_todas_dependencias, r.fecha_creacion, r.tiempo_de_respuesta,
-                    ${TERMINO}, (${filtro}) AS coincide_filtros
-                 ${FROM} WHERE ${base} AND ${candidatos}
-                 ${ORDEN} LIMIT 250 OFFSET ?`,
-                [...valoresFiltro, ...valoresBase, cuartoHabil, cuartoCalendario, offset]);
-            for (const row of rows) {
-                const nivel = presentar(row).semaforo.nivel;
-                if (!['alerta', 'vencido'].includes(nivel)) continue;
-                resumen.criticos++;
-                if (!Number(row.coincide_filtros)) continue;
-                if (total >= inicio && claves.length < opciones.limite) {
-                    claves.push([row.numero_radicado, row.radicado_dependencia_id || 0]);
-                }
-                total++;
-                if (nivel === 'alerta') porVencer++;
-                else vencidos++;
+        const [candidatosRows] = await connection.execute(
+            `SELECT r.numero_radicado, r.estado, r.requiere_respuesta,
+                r.destino_todas_dependencias, r.fecha_creacion, r.tiempo_de_respuesta,
+                ${TERMINO}, (${filtro}) AS coincide_filtros
+             ${FROM} WHERE ${base} AND ${candidatos}
+             ${ORDEN}`,
+            [...valoresFiltro, ...valoresBase, cuartoHabil, cuartoCalendario]);
+        for (const row of candidatosRows) {
+            const nivel = presentar(row).semaforo.nivel;
+            if (!['alerta', 'vencido'].includes(nivel)) continue;
+            resumen.criticos++;
+            if (!Number(row.coincide_filtros)) continue;
+            if (total >= inicio && claves.length < opciones.limite) {
+                claves.push([row.numero_radicado, row.radicado_dependencia_id || 0]);
             }
-            if (rows.length < 250) break;
-            offset += rows.length;
+            total++;
+            if (nivel === 'alerta') porVencer++;
+            else vencidos++;
         }
         let rows = [];
         if (opciones.criticos || soloAlertas) {

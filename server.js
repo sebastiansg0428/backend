@@ -29,8 +29,8 @@ const PORT = Number(process.env.PORT || 3000);
 
 // Middlewares esenciales
 app.use(crearMiddlewareCors());
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(express.json({ limit: '1mb' }));
+app.use(express.urlencoded({ extended: true, limit: '1mb' }));
 
 // Asegurar carpeta uploads
 const uploadDir = process.env.UPLOAD_DIR

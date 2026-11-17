@@ -69,6 +69,7 @@ este orden, deteniendote si un paso falla:
 | 027 | Recepcion digital interna y primera apertura; aplicada y verificada en desarrollo, independiente de 026 |
 | 028 | Rol historico del actor; aplicada y verificada en desarrollo con respaldo restaurado y ensayo aislado |
 | 029 | Fecha real de envio/entrega; aplicada y verificada en desarrollo con respaldo restaurado y ensayo aislado |
+| 030 | `node migrations\030_estado_entregado.js --inspeccionar|--aplicar|--verificar`; agrega `Entregado` al dominio compatible de `radicados.estado` |
 
 Las migraciones SQL no son todas idempotentes y los cambios DDL pueden quedar
 confirmados aunque un paso posterior falle: no vuelvas a importar toda la

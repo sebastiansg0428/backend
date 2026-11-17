@@ -54,6 +54,25 @@ El DDL hace commit implicito: un fallo parcial requiere inspeccion antes de
 continuar; no repetir a ciegas ni eliminar estructuras para reintentar.
 La aplicacion repetida sobre esquema compatible no introduce cambios.
 
+## Estado final de entrega (030)
+
+[030_estado_entregado.js](030_estado_entregado.js) inspecciona `radicados.estado`
+antes de modificarlo. Si es un `ENUM` compatible, agrega `Entregado` al final y
+conserva los estados existentes; si ya está aplicado o es un `VARCHAR` de
+longitud suficiente, no ejecuta DDL. Una definición incompatible se rechaza sin
+escrituras. El DDL hace commit implícito: respalda e inspecciona antes de
+aplicar, y vuelve a verificar después.
+
+```powershell
+node migrations\030_estado_entregado.js --inspeccionar
+# Solo tras respaldo verificado:
+node migrations\030_estado_entregado.js --aplicar
+node migrations\030_estado_entregado.js --verificar
+```
+
+La migración no actualiza radicados históricos ni crea entregas; solo permite
+que la transacción de una entrega acreditada persista el estado `Entregado`.
+
 ```powershell
 node migrations\029_fecha_real_entrega.js --verificar
 # Solo tras autorizacion y respaldo verificado:

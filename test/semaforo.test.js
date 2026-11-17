@@ -99,6 +99,17 @@ test('marca radicados respondidos como completados', () => {
     assert.equal(semaforo.nivel, 'completado');
 });
 
+test('marca radicados entregados como completados', () => {
+    const semaforo = calcularSemaforoBackend({
+        estado: 'Entregado',
+        fecha_recepcion: '2026-07-01',
+        termino_dias_aplicado: 15,
+        tipo_dias_aplicado: 'habiles'
+    }, '2026-07-31');
+
+    assert.equal(semaforo.nivel, 'completado');
+});
+
 test('falla explícitamente si la fecha del radicado no es válida', () => {
     assert.throws(
         () => calcularSemaforoBackend({

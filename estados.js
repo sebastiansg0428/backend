@@ -19,7 +19,7 @@ function requiereRespuesta(registro) {
 }
 
 function esEstadoFinal(estado) {
-    return ['respondido', 'enterado'].includes(normalizarTexto(estado));
+    return ['respondido', 'entregado', 'enterado'].includes(normalizarTexto(estado));
 }
 
 module.exports = { obtenerEstadoEditable, requiereRespuesta, esEstadoFinal };

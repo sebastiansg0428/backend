@@ -81,6 +81,7 @@ test('entregas HTTP: contrato3, fecha anterior, dos fechas, replay legado, orden
     let referenciaEpoch = 1767618000;
     let filas = [];
     let fechas = [];
+    let estado = 'Respondido';
     const sqlLeido = [];
     t.mock.method(pool, 'query', async (sql, valores) => metadata(sql, valores, disponible));
     t.mock.method(pool, 'execute', async sql => {
@@ -91,15 +92,16 @@ test('entregas HTTP: contrato3, fecha anterior, dos fechas, replay legado, orden
         let anteriores;
         return {
             async query() {},
-            async beginTransaction() { anteriores = [structuredClone(filas), structuredClone(fechas)]; },
+            async beginTransaction() { anteriores = [structuredClone(filas), structuredClone(fechas), estado]; },
             async commit() {},
-            async rollback() { [filas, fechas] = anteriores; },
+            async rollback() { [filas, fechas, estado] = anteriores; },
             release() {},
             async execute(sql, v = []) {
                 sqlLeido.push(sql);
                 if (sql.includes('SELECT numero_radicado,tipo_comunicacion')) return [[{
                     numero_radicado: 'RAD-FIXTURE', tipo_comunicacion: 'Externa', destino_todas_dependencias: 0,
                 }]];
+                if (sql.includes('SELECT estado FROM radicados')) return [[{ estado }]];
                 if (sql.includes('UNIX_TIMESTAMP(fecha_envio)')) return [[{ fecha_respuesta_epoch: referenciaEpoch }]];
                 if (sql.includes('SELECT id FROM respuestas_radicado')) return [[{ id: 10 }]];
                 if (sql.includes('SELECT id,respuesta_id,huella')) return [filas.filter(f => f.clave === v[1])];
@@ -123,6 +125,9 @@ test('entregas HTTP: contrato3, fecha anterior, dos fechas, replay legado, orden
                 if (sql.includes('INSERT INTO entregas_confirmacion')) return [{ affectedRows: 1 }];
                 if (sql.includes('INSERT INTO entregas_fecha_real')) {
                     fechas.push({ registro_id: v[0], justificacion_fecha_anterior: v[1] }); return [{ affectedRows: 1 }];
+                }
+                if (sql.includes("UPDATE radicados SET estado='Entregado'")) {
+                    estado = 'Entregado'; return [{ affectedRows: 1 }];
                 }
                 if (sql.includes('INSERT INTO historial_radicado')) {
                     if (romperAuditoria) throw new Error('Auditoria fixture');

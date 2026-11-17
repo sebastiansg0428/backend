@@ -126,7 +126,8 @@ async function consultarPagina(pool, usuario, opciones, dependenciaId = null, so
         const cuartoHabil = agregarDias(hoy, 4, 'habiles');
         const cuartoCalendario = agregarDias(hoy, 4, 'calendario');
         const candidatos = `COALESCE(r.requiere_respuesta, 1) <> 0
-            AND LOWER(TRIM(COALESCE(NULLIF(rd.estado, ''), r.estado, ''))) <> 'respondido'
+            AND (LOWER(CONVERT(TRIM(COALESCE(NULLIF(rd.estado, ''), r.estado, '')) USING utf8mb4))
+                COLLATE utf8mb4_unicode_ci) <> 'respondido'
             AND (CASE WHEN r.destino_todas_dependencias = 1
                  THEN rd.fecha_respuesta ELSE rt.fecha_respuesta END) IS NULL
             AND (COALESCE(rt.fecha_limite_actual, rt.fecha_limite_inicial) IS NULL

@@ -291,6 +291,17 @@ function crearRouterEntregas(uploadDir) {
             });
             if (datos.resultado === 'entrega_acreditada' &&
                 archivos.every(a => fuentes.some(f => f.sha256 === a.sha256))) throw fallo(400, 'El PDF de respuesta no acredita recepcion. Adjunta una constancia adicional diferente.');
+            const [[radicadoActual]] = await c.execute(
+                'SELECT estado FROM radicados WHERE numero_radicado=? FOR UPDATE',
+                [req.params.numero_radicado]
+            );
+            const estadoNormalizado = String(radicadoActual?.estado || '').trim().toLowerCase();
+            if (estadoNormalizado === 'entregado') {
+                throw fallo(409, 'El radicado ya tiene una entrega final acreditada. Anula el registro vigente antes de registrar otra actuacion.');
+            }
+            if (datos.resultado === 'entrega_acreditada' && estadoNormalizado !== 'respondido') {
+                throw fallo(409, 'El radicado ya tiene una entrega final acreditada. Anula el registro vigente antes de registrar otra actuacion.');
+            }
             const [acreditadas] = await c.execute(`SELECT id FROM registros_entrega_respuesta
                 WHERE respuesta_id=? AND resultado='entrega_acreditada' AND anulado_en_utc IS NULL LIMIT 1`, [respuesta]);
             if (acreditadas.length) throw fallo(409, 'Ya existe una entrega acreditada vigente. Anulala con motivo antes de registrar otra actuacion.');
@@ -323,11 +334,21 @@ function crearRouterEntregas(uploadDir) {
             }
             await registrarEventoRadicado(c, req, { numeroRadicado: req.params.numero_radicado,
                 tipo: 'entrega_registrada', valorNuevo: datos.resultado, motivo: `Registro de envio/entrega #${nuevoId} (${datos.canal}).` });
+            if (datos.resultado === 'entrega_acreditada') {
+                await c.execute(
+                    "UPDATE radicados SET estado='Entregado' WHERE numero_radicado=? AND estado='Respondido'",
+                    [req.params.numero_radicado]
+                );
+                await registrarEventoRadicado(c, req, { numeroRadicado: req.params.numero_radicado,
+                    tipo: 'entrega_acreditada', valorAnterior: 'Respondido', valorNuevo: 'Entregado',
+                    motivo: `Entrega final acreditada mediante el registro #${nuevoId}.` });
+            }
             const registro = await comprobante(c, nuevoId, true, true);
             commitIniciado = true;
             await c.commit();
             confirmado = true;
-            return res.status(201).json({ success: true, registro });
+            return res.status(201).json({ success: true,
+                estado: datos.resultado === 'entrega_acreditada' ? 'Entregado' : 'Respondido', registro });
         } catch (error) {
             ({ connection: c, error } = await revertirTrasError(c, error));
             if (commitIniciado && !confirmado) {
@@ -368,9 +389,24 @@ function crearRouterEntregas(uploadDir) {
                 await registrarEventoRadicado(c, req, { numeroRadicado: req.params.numero_radicado,
                     tipo: 'entrega_anulada', motivo: `Anulacion del registro #${registroId}.`, valorNuevo: 'anulada' });
             }
+            const [[acreditacion]] = await c.execute(`SELECT COUNT(*) AS total
+                FROM registros_entrega_respuesta
+                WHERE respuesta_id=? AND resultado='entrega_acreditada' AND anulado_en_utc IS NULL`, [respuesta]);
+            const [[estadoActual]] = await c.execute(
+                'SELECT estado FROM radicados WHERE numero_radicado=? FOR UPDATE',
+                [req.params.numero_radicado]
+            );
+            const estadoNuevo = Number(acreditacion.total) > 0 ? 'Entregado' : 'Respondido';
+            if (estadoActual?.estado !== estadoNuevo) {
+                await c.execute('UPDATE radicados SET estado=? WHERE numero_radicado=?',
+                    [estadoNuevo, req.params.numero_radicado]);
+                await registrarEventoRadicado(c, req, { numeroRadicado: req.params.numero_radicado,
+                    tipo: 'entrega_estado_restaurado', valorAnterior: estadoActual?.estado || null,
+                    valorNuevo: estadoNuevo, motivo: `Estado actualizado tras anular el registro #${registroId}.` });
+            }
             const registro = await comprobante(c, registroId, req.entregaAutomatica, req.entregaFechaReal);
             await c.commit();
-            res.json({ success: true, registro });
+            res.json({ success: true, estado: estadoNuevo, registro });
         } catch (error) {
             ({ connection: c, error } = await revertirTrasError(c, error)); next(error);
         } finally { if (c) c.release(); }

@@ -136,7 +136,7 @@ function calcularSemaforoBackend(radicado, fechaActual = new Date()) {
             'bg-slate-100 text-slate-700 border-slate-300', 'bg-slate-500', null, null);
     }
     if (
-        String(radicado.estado || '').trim().toLowerCase() === 'respondido' ||
+        ['respondido', 'entregado'].includes(String(radicado.estado || '').trim().toLowerCase()) ||
         radicado.fecha_respuesta
     ) {
         return crearResultado(

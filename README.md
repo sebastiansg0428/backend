@@ -841,6 +841,45 @@ npm test
 Reinicia el proceso Node.js despues de modificar el backend; `npm start` no
 recarga los archivos automaticamente.
 
+### Pruebas HTTP locales y `fetch failed`
+
+Las pruebas de `npm test` conservan su cobertura HTTP real: cada archivo que
+necesita una ruta levanta temporalmente la aplicacion Express con un puerto
+dinamico en `127.0.0.1`. No es necesario iniciar manualmente otro backend para
+ejecutarlas; tampoco deben confundirse con el proceso de desarrollo iniciado
+con `npm start`.
+
+Ejecuta la suite desde una terminal local con permiso para abrir y consumir
+conexiones de loopback:
+
+```powershell
+cd C:\Users\sebas\OneDrive\Escritorio\ventanilla_app\backend
+npm test
+```
+
+El resultado valido debe terminar con todas las pruebas ejecutadas aprobadas:
+
+```text
+# pass: todas las pruebas ejecutadas
+# fail: 0
+# skipped: segun las pruebas opcionales habilitadas
+```
+
+Si aparece `fetch failed`, revisa la causa interna del error. Cuando contiene:
+
+```text
+connect EACCES 127.0.0.1:<puerto>
+```
+
+el entorno de ejecucion esta bloqueando las conexiones TCP locales. Es una
+restriccion del entorno de pruebas, no un fallo funcional de una ruta Express,
+de MariaDB ni de los contratos HTTP. Repite `npm test` en una terminal con
+loopback habilitado; no cambies los endpoints ni reemplaces las pruebas HTTP
+por invocaciones internas solo para ocultar este diagnostico.
+
+Como referencia, el 18 de noviembre de 2026 la suite ejecutada fuera del
+aislamiento restringido termino con `264 pass`, `0 fail` y `5 skipped`.
+
 ### Manejo de fallos en ampliaciones
 
 `POST /api/radicados/:numero_radicado/ampliaciones` adquiere la conexion dentro

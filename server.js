@@ -1704,6 +1704,12 @@ app.put(
                 await connection.rollback();
                 return responderError(res, 409, 'Este radicado requiere una respuesta institucional, no puede cerrarse como Enterado.');
             }
+            if (req.usuario.rol === 'funcionario' && !requiereRespuesta(actuales[0]) &&
+                !['Recibido', 'Enterado'].includes(estadoNuevo)) {
+                reversionIntentada = true;
+                await connection.rollback();
+                return responderError(res, 409, 'Los trámites informativos solo pueden permanecer en Recibido o cerrarse como Enterado.');
+            }
             if (!idAsignacion && estadoNuevo === 'Enterado') {
                 await cancelarTrasladoPendiente(connection, req, numero_radicado);
             }

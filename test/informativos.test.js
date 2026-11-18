@@ -69,7 +69,12 @@ test('Enterado cierra solo informativos, por destino, con fecha y auditoría sin
         global = esGlobal;
         estado = 'Recibido';
         escrituras.length = 0;
-        assert.equal((await pedir('En trámite')).status, 200);
+        for (const estadoIntermedio of ['En trámite', 'Pendiente']) {
+            const intermedio = await pedir(estadoIntermedio);
+            assert.equal(intermedio.status, 409);
+            assert.match((await intermedio.json()).message, /solo pueden permanecer en Recibido o cerrarse como Enterado/);
+            assert.equal(escrituras.length, 0);
+        }
         const cierre = await pedir('Enterado');
         assert.equal(cierre.status, 200);
         const datos = await cierre.json();

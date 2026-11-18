@@ -13,6 +13,7 @@ const internaIndividual = r => String(r.tipo_comunicacion).trim().toLowerCase() 
     !Number(r.destino_todas_dependencias) && Number(r.requiere_respuesta ?? 1) !== 0;
 const SELECT = `SELECT ri.*,rr.numero_radicado,rr.contenido,rr.fecha_envio,
     r.dependencia_destino_id,r.dependencia_destino,r.dependencia_remitente,
+    r.estado AS radicado_estado,r.tipo_recepcion,
     r.asunto_documento,u.nombre AS funcionario_nombre,origen.activo AS origen_activo,
     destino.activo AS destino_activo
     FROM recepciones_internas ri JOIN respuestas_radicado rr ON rr.id=ri.respuesta_id
@@ -147,11 +148,17 @@ function crearRouterInternas(uploadDir) {
             const r = await obtener(c, req.usuario, 'ri.id=?', [id(req.params.id)], true);
             if (req.usuario.dependencia_id !== r.dependencia_origen_id || Number(r.origen_activo) !== 1) throw fallo(403, 'Solo la dependencia de origen activa registra apertura.');
             if (!r.primera_apertura_utc) {
+                if (r.radicado_estado !== 'Respondido') {
+                    throw fallo(409, 'La respuesta interna no está en estado Respondido; no se puede confirmar su entrega.');
+                }
                 await c.execute(`UPDATE recepciones_internas SET primera_apertura_utc=UTC_TIMESTAMP(6),
                     actor_id=?,actor_nombre=? WHERE id=?`, [req.usuario.id, req.usuario.nombre, r.id]);
+                await c.execute(`UPDATE radicados SET estado='Entregado'
+                    WHERE numero_radicado=? AND estado='Respondido'`, [r.numero_radicado]);
                 await registrarEventoRadicado(c, req, { numeroRadicado: r.numero_radicado, tipo: 'respuesta_interna_abierta',
                     dependenciaId: r.dependencia_origen_id, dependenciaNombre: r.dependencia_remitente,
-                    valorNuevo: 'Primera apertura registrada', motivo: 'La dependencia de origen abrio la respuesta interna en el sistema.' });
+                    valorAnterior: 'Respondido', valorNuevo: 'Entregado',
+                    motivo: `La dependencia de origen abrió la respuesta interna y confirmó su entrega (${r.tipo_recepcion || 'canal no registrado'}).` });
             }
             const actualizado = await obtener(c, req.usuario, 'ri.id=?', [r.id]);
             await c.commit();

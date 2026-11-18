@@ -790,6 +790,9 @@ test('traslados HTTP/MySQL: permisos, concurrencia, reintentos y plazos en base 
         for (const resp of carreras) { assert.equal(resp.status, 200); recibos.push(await resp.json()); }
         for (const recibo of recibos) assert.deepEqual(recibo, recibos[0]);
         assert.ok(recibos[0].recepcion.primera_apertura_utc);
+        assert.equal(recibos[0].recepcion.radicado_estado, 'Entregado');
+        const [[estadoInterno]] = await pool.execute('SELECT estado FROM radicados WHERE numero_radicado=?', [n]);
+        assert.equal(estadoInterno.estado, 'Entregado');
         const [[auditoria]] = await pool.execute(`SELECT COUNT(*) AS n FROM historial_radicado
             WHERE numero_radicado=? AND event_type='respuesta_interna_abierta'`, [n]);
         assert.equal(Number(auditoria.n), 1);
@@ -799,6 +802,19 @@ test('traslados HTTP/MySQL: permisos, concurrencia, reintentos y plazos en base 
         assert.equal((await pedir(1, '/api/respuestas-internas?pagina=0')).status, 400);
         const destino = await (await pedir(0, `/api/radicados/${n}/recepcion-interna`)).json();
         assert.deepEqual(destino.recepcion, recibos[0].recepcion);
+    });
+    await t.test('interno fisico tambien se cierra al abrir la respuesta', async () => {
+        const n = await interno();
+        await pool.execute("UPDATE radicados SET tipo_recepcion='Fisica' WHERE numero_radicado=?", [n]);
+        assert.equal((await responder(0, n)).status, 201);
+        const h = await (await pedir(1, '/api/respuestas-internas')).json();
+        const r = h.registros.find(registro => registro.numero_radicado === n);
+        assert.equal(r.tipo_recepcion, 'Fisica');
+        const apertura = await pedir(1, `/api/respuestas-internas/${r.id}/apertura`, {});
+        assert.equal(apertura.status, 200);
+        assert.equal((await apertura.json()).recepcion.radicado_estado, 'Entregado');
+        const [[estado]] = await pool.execute('SELECT estado FROM radicados WHERE numero_radicado=?', [n]);
+        assert.equal(estado.estado, 'Entregado');
     });
     await t.test('internos: PDF autenticado no marca apertura; fallo de auditoria y respuesta son atomicos', async () => {
         const n = await interno();
@@ -818,18 +834,25 @@ test('traslados HTTP/MySQL: permisos, concurrencia, reintentos y plazos en base 
         assert.equal(descarga.status, 200);
         assert.deepEqual(Buffer.from(await descarga.arrayBuffer()), bytesEntrega);
         assert.equal((await (await pedir(1, `/api/respuestas-internas/${r.id}`)).json()).recepcion.primera_apertura_utc, null);
+        const falloApertura = await interno();
+        assert.equal((await responder(0, falloApertura)).status, 201);
+        const respuestaFallo = await (await pedir(1, '/api/respuestas-internas')).json();
+        const rFallo = respuestaFallo.registros.find(registro => registro.numero_radicado === falloApertura);
         await pool.query(`CREATE TRIGGER fixture_fallo_interno BEFORE INSERT ON historial_radicado FOR EACH ROW
             BEGIN IF NEW.event_type='respuesta_interna_abierta' OR NEW.event_type='respuesta_enviada'
             THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='Fallo interno ficticio'; END IF; END`);
         const nuevo = await interno();
         try {
-            assert.equal((await pedir(1, `/api/respuestas-internas/${r.id}/apertura`, {})).status, 500);
+            assert.equal((await pedir(1, `/api/respuestas-internas/${rFallo.id}/apertura`, {})).status, 500);
+            const estadoFallo = await (await pedir(1, `/api/respuestas-internas/${rFallo.id}`)).json();
+            assert.equal(estadoFallo.recepcion.primera_apertura_utc, null);
+            const [[radicadoFallo]] = await pool.execute('SELECT estado FROM radicados WHERE numero_radicado=?', [falloApertura]);
+            assert.equal(radicadoFallo.estado, 'Respondido');
             assert.equal((await responder(0, nuevo)).status, 500);
             const [[cuenta]] = await pool.execute('SELECT COUNT(*) AS n FROM respuestas_radicado WHERE numero_radicado=?', [nuevo]);
             assert.equal(Number(cuenta.n), 0);
-            assert.equal((await (await pedir(1, `/api/respuestas-internas/${r.id}`)).json()).recepcion.primera_apertura_utc, null);
         } finally { await pool.query('DROP TRIGGER fixture_fallo_interno'); }
-        assert.equal((await pedir(1, `/api/respuestas-internas/${r.id}/apertura`, {})).status, 200);
+        assert.equal((await pedir(1, `/api/respuestas-internas/${rFallo.id}/apertura`, {})).status, 200);
         const [[cruzado]] = await pool.execute(`SELECT id FROM documentos_respuesta WHERE respuesta_id<>? LIMIT 1`, [r.respuesta_id]);
         assert.equal((await pedir(1, `/api/respuestas-internas/${r.id}/documentos/${cruzado.id}`)).status, 404);
     });

@@ -12,8 +12,30 @@ el frontend `ventanilla`.
   de proponer o implementar cambios.
 - El backend es la autoridad final para validación, autorización, fechas,
   transacciones y reglas de negocio.
-- Las specs que afecten al frontend y a MySQL se mantienen en `backend/specs/`;
-  el frontend debe enlazarlas en su documentación local.
+- Las specs cuyo alcance principal sea backend se mantienen en `backend/specs/`.
+- Las specs frontend-only se mantienen en `../ventanilla/specs/`.
+- Las funcionalidades mixtas permanecen en `backend/specs/` como fuente
+  compartida y deben indicar explícitamente su impacto en el frontend.
+
+## Ubicación de specs
+
+- Usa `backend/specs/` para endpoints, controladores, servicios, base de datos,
+  migraciones, validaciones de servidor, permisos y reglas de negocio.
+- Usa `../ventanilla/specs/` para React, CSS, vistas, interacción,
+  accesibilidad y estados de interfaz.
+- Si el cambio abarca ambos repositorios, conserva una spec compartida en
+  `backend/specs/` o crea specs relacionadas por ID, una por repositorio.
+- No dupliques specs ni crees una spec frontend-only en `backend/specs/`.
+
+## Prioridad y resolución de instrucciones
+
+- La solicitud explícita del usuario tiene prioridad sobre este archivo, siempre
+  que no contradiga las instrucciones del sistema ni las reglas de seguridad.
+- El `AGENTS.md` más cercano al archivo modificado prevalece sobre uno más
+  general.
+- Las specs son la fuente de verdad funcional y contractual del cambio.
+- Las instrucciones de Copilot complementan este documento y no pueden
+  contradecirlo ni cambiar los contratos existentes.
 
 ## Comandos oficiales
 
@@ -69,6 +91,19 @@ no deben contradecir una spec existente.
 - No ejecutar acciones destructivas, despliegues o publicaciones como parte de
   una tarea técnica sin que el usuario las solicite expresamente.
 
+## Reglas de API y seguridad
+
+- Conserva rutas, métodos HTTP, nombres de campos, estados, payloads y códigos
+  de respuesta, salvo que una spec aprobada documente una decisión compatible.
+- Valida entradas y autorización en el servidor antes de ejecutar cambios o
+  devolver datos.
+- Usa consultas preparadas, transacciones y control de acceso por rol y
+  dependencia cuando corresponda.
+- Protege credenciales, datos personales, tokens y adjuntos; no los expongas
+  en logs ni respuestas innecesarias.
+- Mantén la validación real de PDFs, nombres internos seguros, autorización de
+  descarga y limpieza de temporales ante errores.
+
 ## Resolución de ambigüedades y fallos
 
 - La solicitud explícita del usuario tiene prioridad sobre este archivo.
@@ -117,6 +152,20 @@ no deben contradecir una spec existente.
 - No marques una tarea como terminada si faltan tests, revisión humana o una
   decisión funcional necesaria.
 - Conserva los cambios pequeños para facilitar revisión y rollback.
+
+## Criterios de terminado
+
+- Se ejecutaron las pruebas pertinentes y `node --check server.js` cuando el
+  cambio afecta código del servidor.
+- Cada fallo quedó clasificado como funcional o de infraestructura; no se
+  oculta un fallo funcional bajo una limitación del entorno.
+- Se verificaron rollback, idempotencia y liberación de conexiones cuando
+  aplican.
+- No quedan decisiones funcionales, contratos o permisos sin resolver.
+- La revisión humana está realizada o queda registrada explícitamente como
+  pendiente.
+- Las specs usan únicamente `proposed`, `implementing` o `completed`:
+  `completed` requiere implementación y revisión humana; no usar `implemented`.
 
 El reporte final debe indicar como mínimo:
 

@@ -1,7 +1,21 @@
-# Especificaciones del sistema
+# Especificaciones del backend y contratos compartidos
 
-Esta carpeta es la fuente central de especificaciones compartidas para el
-backend, el frontend `ventanilla` y MySQL.
+Esta carpeta contiene las specs cuyo alcance principal sea backend y las
+funcionalidades mixtas que definan contratos compartidos con el frontend
+`ventanilla` o MySQL.
+
+Las specs frontend-only —React, CSS, vistas, interacción, accesibilidad y
+estados de UI— se mantienen en `../ventanilla/specs/`.
+
+## Regla de ubicación
+
+- Backend: endpoints, controladores, servicios, base de datos, migraciones,
+  validaciones de servidor, permisos y reglas de negocio.
+- Frontend: `../ventanilla/specs/` para componentes, estilos, vistas,
+  interacción y estados de interfaz.
+- Mixto: permanece aquí y debe indicar explícitamente el impacto en el
+  frontend. Si necesita criterios separados, enlaza specs relacionadas por ID.
+- No dupliques specs entre repositorios.
 
 ## Qué es una spec
 
@@ -28,7 +42,8 @@ aceptación y evidencia de pruebas.
 
 ## Flujo de trabajo
 
-1. Copiar `_plantilla.md` y asignar un identificador estable.
+1. Copiar `_plantilla.md` y asignar un identificador estable. Para cambios
+   frontend-only, usa `../ventanilla/specs/_plantilla.md`.
 2. Documentar el estado actual antes de proponer cambios.
 3. Definir objetivos, exclusiones, contratos y escenarios.
 4. Revisar dependencias con migraciones, API, UI, archivos y permisos.

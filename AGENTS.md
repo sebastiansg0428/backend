@@ -132,6 +132,7 @@ no deben contradecir una spec existente.
 - Conserva la validación real de PDF, límites de tamaño, nombres seguros,
   autorización de descarga y limpieza ante errores.
 - Explica cada cambio y su riesgo en la spec o en el Pull Request.
+- Los comentarios en el código deben ser claros, concisos y explicar el propósito y riesgo de los cambios realizados.
 
 ## Migraciones y base de datos
 

@@ -12,7 +12,7 @@ const ROLES = new Set(['administrador', 'ventanilla', 'funcionario']);
 const sesiones = new Map();
 const DURACION_SESION = 8 * 60 * 60 * 1000;
 const COSTO_BCRYPT = 12;
-const POLITICA_PASSWORD = 'Minimo 10 caracteres, una mayuscula, una minuscula, un numero y un simbolo; maximo 72 bytes UTF-8.';
+const POLITICA_PASSWORD = 'Mínimo 10 caracteres; incluye una mayúscula, una minúscula, un número y un símbolo. No se permiten espacios. Máximo 72 bytes UTF-8.';
 
 function errorHTTP(res, status, message) {
     return res.status(status).json({ success: false, message });
@@ -182,9 +182,29 @@ function filtroLecturaRadicado(usuario, alias = 'r') {
     };
 }
 
+function filtroGestionRadicado(usuario, alias = 'r') {
+    return filtroDependencia(usuario, alias);
+}
+
 async function autorizarRadicado(req, res, next) {
     try {
         const filtro = filtroLecturaRadicado(req.usuario);
+        const [rows] = await pool.execute(
+            `SELECT r.id FROM radicados r WHERE r.numero_radicado = ? AND ${filtro.sql} LIMIT 1`,
+            [req.params.numero_radicado, ...filtro.valores]
+        );
+        if (!rows.length) {
+            return errorHTTP(res, 404, 'Radicado no encontrado o fuera de tu dependencia.');
+        }
+        return next();
+    } catch (error) {
+        return next(error);
+    }
+}
+
+async function autorizarGestionRadicado(req, res, next) {
+    try {
+        const filtro = filtroGestionRadicado(req.usuario);
         const [rows] = await pool.execute(
             `SELECT r.id FROM radicados r WHERE r.numero_radicado = ? AND ${filtro.sql} LIMIT 1`,
             [req.params.numero_radicado, ...filtro.valores]
@@ -220,6 +240,7 @@ function datosUsuario(body) {
 function passwordValido(password) {
     return typeof password === 'string' && Array.from(password).length >= 10 &&
         Buffer.byteLength(password, 'utf8') <= 72 && !password.includes('\0') &&
+        !/\s/u.test(password) &&
         /\p{Lu}/u.test(password) && /\p{Ll}/u.test(password) &&
         /[0-9]/.test(password) && /[^\p{L}\p{N}\s]/u.test(password);
 }
@@ -481,7 +502,8 @@ router.patch('/usuarios/:id/estado', autenticar, permitirRoles('administrador'),
 });
 
 module.exports = {
-    router, autenticar, permitirRoles, filtroDependencia, filtroLecturaRadicado, autorizarRadicado,
+    router, autenticar, permitirRoles, filtroDependencia, filtroLecturaRadicado, filtroGestionRadicado, autorizarRadicado,
+    autorizarGestionRadicado,
     hashPassword, verificarPassword, passwordValido, POLITICA_PASSWORD,
     crearSesion, revocarSesiones, datosUsuario
 };

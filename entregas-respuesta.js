@@ -13,7 +13,8 @@ const { verificar: verificar029 } = require('./migrations/029_fecha_real_entrega
 
 const fallo = (status, message) => Object.assign(new Error(message), { status });
 const sha = contenido => createHash('sha256').update(contenido).digest('hex');
-const COLUMNAS = `id,respuesta_id,canal,resultado,destinatario,destino,fecha_actuacion_utc,
+const COLUMNAS = `id,respuesta_id,canal,resultado,destinatario,destino,
+    DATE_FORMAT(fecha_actuacion_utc, '%Y-%m-%d %H:%i:%s.%f') AS fecha_actuacion_utc,
     observaciones,actor_nombre,creado_en_utc,anulado_en_utc,anulador_nombre,motivo_anulacion`;
 function entero(valor, nombre) {
     if (!/^[1-9]\d*$/.test(String(valor)) || !Number.isSafeInteger(Number(valor))) throw fallo(400, `${nombre} invalido.`);
@@ -93,6 +94,9 @@ function resumen(eventos) {
         Number(b.id || 0) - Number(a.id || 0));
     return vigentes.find(e => e.resultado === 'entrega_acreditada')?.resultado ||
         vigentes[0]?.resultado || 'pendiente_de_envio';
+}
+function estadoPublico(registro) {
+    return registro?.resultado === 'entrega_acreditada' ? 'Entregado' : 'Respondido';
 }
 async function limpiar(archivos) {
     for (const archivo of archivos || []) {
@@ -272,7 +276,7 @@ function crearRouterEntregas(uploadDir) {
                 const registro = await comprobante(c, replay[0].id, req.entregaAutomatica, req.entregaFechaReal);
                 await c.rollback();
                 await limpiar(req.files);
-                return res.json({ success: true, registro });
+                return res.json({ success: true, estado: estadoPublico(registro), registro });
             }
             if (datos.version !== 3) throw fallo(409, 'Actualiza la interfaz: los nuevos registros requieren fecha real de la actuacion.');
             if (!req.entregaAutomatica) throw fallo(503, 'Registro automatico no activado: falta aplicar/verificar migracion 026.');
@@ -347,8 +351,7 @@ function crearRouterEntregas(uploadDir) {
             commitIniciado = true;
             await c.commit();
             confirmado = true;
-            return res.status(201).json({ success: true,
-                estado: datos.resultado === 'entrega_acreditada' ? 'Entregado' : 'Respondido', registro });
+            return res.status(201).json({ success: true, estado: estadoPublico(registro), registro });
         } catch (error) {
             ({ connection: c, error } = await revertirTrasError(c, error));
             if (commitIniciado && !confirmado) {

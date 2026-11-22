@@ -44,7 +44,30 @@ Ejecuta los comandos desde la raíz de este repositorio:
 ```powershell
 npm test
 node --check server.js
+npm run test:loopback
+npm run test:mysql
 ```
+
+- `npm test` ejecuta la suite general y deja omitidas las pruebas MySQL
+  opcionales cuando no se habilitan sus variables.
+- `npm run test:loopback` comprueba que Node pueda abrir y consumir un servidor
+  temporal en `127.0.0.1`.
+- `npm run test:mysql` habilita, de forma explícita, las cinco suites que
+  requieren una base MariaDB aislada.
+- `scripts/run-tests.cjs` imprime exitosas, omitidas, fallidas y una
+  clasificación de infraestructura. Conserva el código de salida original de
+  la suite: una falla funcional no se convierte en éxito.
+
+Las suites que requieren MariaDB son `TEST_CONSULTA_MYSQL`,
+`TEST_INTEGRIDAD_MYSQL`, `TEST_LOGIN_MYSQL`,
+`TEST_RECEPCION_RENDIMIENTO_MYSQL` y `TEST_TRASLADOS_MYSQL`. No se deben
+activar contra una base real o productiva.
+
+Cuando una suite levante servidores locales o haga `fetch` a `127.0.0.1` o
+`localhost`, solicita permisos ampliados antes de ejecutarla si el entorno
+restringido bloquea el loopback. Un `fetch failed` acompañado de una causa
+comprobable como `connect EACCES 127.0.0.1:<puerto>` se clasifica como
+infraestructura, no como fallo funcional.
 
 Las pruebas HTTP levantan servidores temporales con puertos dinámicos en
 `127.0.0.1`; necesitan permisos de loopback. Un error `fetch failed` que

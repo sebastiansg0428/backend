@@ -21,7 +21,7 @@ const { crearRouterEntregas } = require('./entregas-respuesta');
 const { crearRouterInternas, registrarRecepcionInterna, internaIndividual } = require('./respuestas-internas');
 const {
     router: authRouter, autenticar, permitirRoles, filtroDependencia, filtroLecturaRadicado,
-    autorizarRadicado
+    filtroGestionRadicado, autorizarRadicado, autorizarGestionRadicado
 } = require('./auth');
 
 const app = express();
@@ -1167,7 +1167,7 @@ app.get('/api/radicados/:numero_radicado/historial', autorizarRadicado, async (r
     }
 });
 
-app.get('/api/radicados/:numero_radicado/documentos', autorizarRadicado, async (req, res) => {
+app.get('/api/radicados/:numero_radicado/documentos', autorizarGestionRadicado, async (req, res) => {
     try {
         const [documentos] = await pool.execute(
             `SELECT id, nombre_archivo, ruta_archivo, tipo_mime, tamano_bytes
@@ -1628,7 +1628,7 @@ app.put(
         try {
             connection = await pool.getConnection();
             await connection.beginTransaction();
-            const filtro = filtroDependencia(req.usuario, 'radicados');
+            const filtro = filtroGestionRadicado(req.usuario, 'radicados');
             const [actuales] = await connection.execute(
                 `SELECT estado, destino_todas_dependencias, requiere_respuesta,
                         dependencia_destino_id, dependencia_destino

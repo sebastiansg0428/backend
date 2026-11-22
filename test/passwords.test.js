@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const { once } = require('node:events');
 const { scrypt: scryptCallback, randomBytes } = require('node:crypto');
 const { promisify } = require('node:util');
+const bcrypt = require('bcrypt');
 const pool = require('../db');
 const app = require('../server');
 const { hashPassword, verificarPassword, passwordValido, revocarSesiones } = require('../auth');
@@ -16,11 +17,11 @@ async function hashAnterior(password) {
 test('politica de complejidad y limites UTF-8 sin truncamiento', async () => {
     for (const password of [
         undefined, '', 'Aa1!corta', 'abcdefghij1!', 'ABCDEFGHIJ1!',
-        'Abcdefghij!!', 'Abcdefghij12', 'Abcdefghij12 ',
+        'Abcdefghij!!', 'Abcdefghij12', 'Abcdefghij12 ', 'Password 123!',
         'Abcdefghij1!\0', `Aa1!${'x'.repeat(69)}`, `Aa1!${'é'.repeat(35)}`
     ]) {
         assert.equal(passwordValido(password), false);
-        await assert.rejects(hashPassword(password), /Minimo 10/);
+        await assert.rejects(hashPassword(password), /Mínimo 10/);
     }
     assert.equal(passwordValido('Árbol-largo-123'), true);
     const maxima = `Aa1!${'é'.repeat(34)}`;
@@ -34,6 +35,8 @@ test('politica de complejidad y limites UTF-8 sin truncamiento', async () => {
     assert.equal(await verificarPassword(maxima, maxima), false);
     const legacy = 'a'.repeat(80);
     assert.equal(await verificarPassword(legacy, await hashAnterior(legacy)), true);
+    const legacyConEspacio = 'Password 123!';
+    assert.equal(await verificarPassword(legacyConEspacio, await bcrypt.hash(legacyConEspacio, 4)), true);
 });
 
 test('login migra scrypt a bcrypt, conserva claves antiguas largas y evita carreras', async t => {

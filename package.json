@@ -4,7 +4,9 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "test": "node --experimental-test-isolation=none --test"
+    "test": "node scripts/run-tests.cjs",
+    "test:mysql": "node scripts/run-tests.cjs --mysql",
+    "test:loopback": "node scripts/test-loopback.cjs"
   },
   "keywords": [],
   "author": "",

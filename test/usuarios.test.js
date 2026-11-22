@@ -203,7 +203,8 @@ test('gestion de usuarios crea, consulta, edita, inactiva y reactiva sin borrar 
         { dependencia_id: null }, { dependencia_id: true }, { dependencia_id: [2] },
         { password: 'corta' }, { password: 'abcdefghijk' },
         { password: 'PASSWORD-123' }, { password: 'Password-larga' },
-        { password: 'Password1234' }, { password: `Aa1!${'x'.repeat(69)}` }
+        { password: 'Password1234' }, { password: 'Password 123!' },
+        { password: `Aa1!${'x'.repeat(69)}` }
     ]) {
         assert.equal((await pedir('/usuarios', 51, 'POST', { ...datos, ...cambios })).status, 400);
         assert.equal((await pedir('/usuarios/53', 51, 'PUT', { ...datos, ...cambios })).status, 400);

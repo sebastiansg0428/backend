@@ -38,7 +38,24 @@ Ejecuta desde la raíz del backend:
 ```powershell
 npm test
 node --check server.js
+npm run test:loopback
+npm run test:mysql
 ```
+
+- `npm test` ejecuta la suite general sin activar las pruebas MySQL opcionales.
+- `npm run test:loopback` valida la apertura y consumo de un servidor temporal
+  local.
+- `npm run test:mysql` activa las cinco suites MariaDB sobre una base aislada.
+- El runner reporta pruebas exitosas, omitidas y fallidas, y clasifica causas
+  comprobables de infraestructura sin ocultar el código de salida original.
+- Las variables MySQL disponibles son `TEST_CONSULTA_MYSQL`,
+  `TEST_INTEGRIDAD_MYSQL`, `TEST_LOGIN_MYSQL`,
+  `TEST_RECEPCION_RENDIMIENTO_MYSQL` y `TEST_TRASLADOS_MYSQL`.
+
+Si el entorno restringido bloquea pruebas que levantan servidores locales o
+usan `fetch` contra `127.0.0.1` o `localhost`, solicita permisos ampliados
+antes de ejecutarlas. No reportes `fetch failed` como fallo de código sin una
+causa funcional comprobable.
 
 Las pruebas HTTP levantan servidores temporales en `127.0.0.1` y requieren
 loopback habilitado. `fetch failed` acompañado de `connect EACCES

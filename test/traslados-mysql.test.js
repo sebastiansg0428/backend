@@ -581,6 +581,7 @@ test('traslados HTTP/MySQL: permisos, concurrencia, reintentos y plazos en base 
         assert.equal(respuestas.filter(r => r.status === 200).length, 5);
         const recibos = await Promise.all(respuestas.map(r => r.json()));
         for (const r of recibos) assert.deepEqual(r, recibos[0]);
+        assert.equal(recibos[0].estado, 'Respondido');
         const r = recibos[0].registro;
         const [[despues]] = await pool.query("SELECT DATE_FORMAT(UTC_TIMESTAMP(6),'%Y-%m-%d %H:%i:%s.%f') AS ahora");
         assert.equal(r.fecha_actuacion_utc, new Date(`${datos.fecha_actuacion}-05:00`).toISOString().replace('T', ' ').replace('Z', '000'));

@@ -781,7 +781,9 @@ test('traslados HTTP/MySQL: permisos, concurrencia, reintentos y plazos en base 
         assert.equal(r.primera_apertura_utc, null);
         for (const actor of [0, 1, 2, 3]) assert.equal((await pedir(actor, `/api/respuestas-internas/${r.id}`)).status, 200);
         assert.equal((await pedir(4, `/api/respuestas-internas/${r.id}`)).status, 404);
-        assert.equal((await pedir(1, `/api/radicados/${n}/documentos`)).status, 404);
+        assert.equal((await pedir(1, `/api/radicados/${n}/documentos`)).status, 200);
+        const externo = await radicar();
+        assert.equal((await pedir(1, `/api/radicados/${externo}/documentos`)).status, 404);
         assert.equal((await pedir(1, `/api/radicados/${n}/estado`, { estado: 'En trámite' })).status, 404);
         for (const actor of [0, 2, 3]) assert.equal((await pedir(actor, `/api/respuestas-internas/${r.id}/apertura`, {})).status, 403);
         const antes = await (await pedir(1, `/api/respuestas-internas/${r.id}`)).json();

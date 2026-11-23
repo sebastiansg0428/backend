@@ -11,6 +11,10 @@ function presentarRadicadoEnFecha(radicado, fechaActual) {
     } = radicado;
     const radicadoConTermino = {
         ...datos,
+        respuesta_interna_pendiente:
+            String(datos.tipo_comunicacion || '').trim().toLowerCase() === 'interna' &&
+            String(datos.estado || '').trim().toLowerCase() === 'respondido' &&
+            Boolean(datos.fecha_respuesta),
         traslado_pendiente: Number(datos.traslado_pendiente) === 1,
         estado: seguimiento_estado || datos.estado,
         fecha_enterado: datos.destino_todas_dependencias

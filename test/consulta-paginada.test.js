@@ -67,6 +67,7 @@ test('pagina mantiene contadores globales, limita detalles y calcula alertas en 
     const usuario = { rol: 'ventanilla', dependencia_id: null };
     const resultado = await consultarPagina(fakePool, usuario, opcionesConsulta({ pagina: '2' }));
     assert.equal(resultado.radicados.length, 25);
+    assert.equal(resultado.radicados[0].respuesta_interna_pendiente, false);
     assert.equal(resultado.vista, 'recibidos');
     assert.equal(resultado.total, 700);
     assert.deepEqual(resultado.resumen, { total: 1000, hoy: 600, criticos: 501 });
@@ -81,6 +82,19 @@ test('pagina mantiene contadores globales, limita detalles y calcula alertas en 
     const consultasCandidatos = consultas.filter(c => c.sql.includes('AS coincide_filtros'));
     assert.equal(consultasCandidatos.length, 2);
     assert.ok(consultasCandidatos.every(c => !c.sql.includes('r.*')));
+});
+
+test('calcula respuesta interna pendiente solo para radicados respondidos', () => {
+    const presentar = require('../presentacion-radicado').presentarRadicadoEnFecha;
+    const base = {
+        tipo_comunicacion: 'Interna', estado: 'Respondido', fecha_respuesta: '2026-11-23 10:00:00',
+        termino_fecha_recepcion: '2026-11-23', termino_dias: 15, termino_tipo_dias: 'habiles',
+        termino_fecha_limite_actual: '2026-12-14'
+    };
+    assert.equal(presentar(base, new Date()).respuesta_interna_pendiente, true);
+    assert.equal(presentar({ ...base, estado: 'Recibido', fecha_respuesta: null }, new Date()).respuesta_interna_pendiente, false);
+    assert.equal(presentar({ ...base, tipo_comunicacion: 'Externa' }, new Date()).respuesta_interna_pendiente, false);
+    assert.equal(presentar({ ...base, estado: 'Entregado' }, new Date()).respuesta_interna_pendiente, false);
 });
 
 test('consulta revierte y explicita fallos de lectura y rollback', async () => {

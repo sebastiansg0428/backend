@@ -1167,7 +1167,7 @@ app.get('/api/radicados/:numero_radicado/historial', autorizarRadicado, async (r
     }
 });
 
-app.get('/api/radicados/:numero_radicado/documentos', autorizarGestionRadicado, async (req, res) => {
+app.get('/api/radicados/:numero_radicado/documentos', autorizarRadicado, async (req, res) => {
     try {
         const [documentos] = await pool.execute(
             `SELECT id, nombre_archivo, ruta_archivo, tipo_mime, tamano_bytes

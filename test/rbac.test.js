@@ -166,7 +166,8 @@ test('RBAC HTTP aplica permisos en listas, alertas, archivos, historial y escrit
                 (esArchivo ? r.ruta_archivo === values[0] : r.numero_radicado === values[0]) &&
                 (!sql.includes('r.dependencia_destino_id = ?') ||
                     r.dependencia_destino_id === dependenciaId || r.destino_todas_dependencias === 1 ||
-                    (String(r.tipo_comunicacion).toLowerCase() === 'interna' &&
+                    (sql.includes('r.dependencia_remitente_id = ?') &&
+                        String(r.tipo_comunicacion).toLowerCase() === 'interna' &&
                         r.dependencia_remitente_id === dependenciaOrigenId)));
             return [encontrados];
         }

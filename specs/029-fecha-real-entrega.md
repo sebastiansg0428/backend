@@ -1,7 +1,8 @@
 ---
 id: FEAT-029
 title: Fecha real de entrega
-status: baseline
+status: implementing
+kind: baseline
 risk: high
 repositories:
   - backend

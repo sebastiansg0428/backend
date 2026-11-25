@@ -1,7 +1,7 @@
 ---
 id: FEAT-ENTREGA-FINAL-EXTERNA
 title: Entrega final de radicados externos
-status: completed
+status: implementing
 risk: high
 repositories:
   - backend

@@ -1,7 +1,7 @@
 ---
 id: FEAT-000
 title: Título de la funcionalidad
-status: draft
+status: proposed
 risk: medium
 repositories:
   - backend

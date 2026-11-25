@@ -17,7 +17,7 @@ legada minima que necesitan las migraciones posteriores, incluidos los campos
 de adjuntos que la 013 traslada y elimina. No es una copia del esquema de una
 base en uso ni un esquema final para ejecutar solo y arrancar el servidor.
 
-Requisitos de destino: Node.js 22.12 o posterior compatible con las dependencias,
+Requisitos de destino: Node.js 22.22.2 o posterior compatible con las dependencias,
 MySQL 8.0.16+ o MariaDB 10.6+ con InnoDB, claves foraneas y restricciones CHECK
 activas. Usa una base dedicada y vacia con charset `utf8mb4` y collation
 `utf8mb4_unicode_ci`, tambien como valores predeterminados de la base para que
@@ -915,7 +915,7 @@ reversion real de MySQL.
 
 ## Validacion de integracion MySQL local
 
-Las cuatro suites MySQL son opt-in. Ejecutarlas **por separado** desde el backend,
+Las cinco suites MySQL son opt-in. Ejecutarlas **por separado** desde el backend,
 despues de disponer de un esquema fuente actualizado; la cuenta local necesita
 permiso para crear/eliminar las bases temporales. No copiar filas reales.
 No requieren detener ni utilizar el servidor HTTP de desarrollo.
@@ -943,9 +943,11 @@ Integridad y traslados tambien generan bases nuevas; traslados construye
 deliberadamente el escenario sin 027 antes de ensayar su activacion, aunque
 el esquema fuente ya la tenga. Ninguna omision opt-in equivale a una prueba pasada.
 
-En el frontend ejecutar `npm run test:react`, `npm run test:legacy` y
-`npm run build`. Evitar competir con ensayos de navegador/MySQL en equipos con
-recursos limitados; no aumentar timeouts para esconder fallos.
+En el frontend ejecutar `npm run test:react`, `npm run test:legacy`,
+`npm run test:visual` y `npm run build`. Las pruebas visuales pertenecen al
+frontend, usan Edge con mocks HTTP y no deben iniciar este backend ni tocar
+MariaDB. Evitar competir con ensayos de navegador/MySQL en equipos con recursos
+limitados; no aumentar timeouts para esconder fallos.
 
 ### Sembrar 100 radicados en desarrollo
 

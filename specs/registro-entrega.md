@@ -1,7 +1,8 @@
 ---
 id: FEAT-ENTREGA
 title: Registro de envío y entrega
-status: baseline
+status: implementing
+kind: baseline
 risk: high
 repositories:
   - backend

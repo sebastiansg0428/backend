@@ -5,7 +5,7 @@ Ventanilla Única desde PowerShell.
 
 ## Requisitos
 
-- Node.js 22.12 o una versión compatible con el proyecto.
+- Node.js 22.22.2 o una versión compatible con las herramientas actuales.
 - Dependencias instaladas con `npm install`.
 - MariaDB únicamente para las pruebas que la requieren.
 - Una base de datos aislada para las pruebas MySQL.

@@ -1,7 +1,7 @@
 ---
 id: FEAT-029-REPARACION
 title: Reparación segura del estado parcial de la migración 029
-status: implemented
+status: implementing
 risk: high
 repositories:
   - backend

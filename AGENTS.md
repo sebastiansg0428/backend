@@ -37,6 +37,58 @@ el frontend `ventanilla`.
 - Las instrucciones de Copilot complementan este documento y no pueden
   contradecirlo ni cambiar los contratos existentes.
 
+## Comunicación, mentoría y documentación
+
+Antes de modificar código:
+
+1. Explica brevemente el problema, el objetivo y el concepto técnico relevante
+   en lenguaje sencillo.
+2. Identifica las rutas, controladores, servicios, migraciones, specs y pruebas
+   que probablemente cambiarán.
+3. Evalúa los riesgos para permisos, contratos HTTP, transacciones, integridad
+   de datos, rendimiento, escalabilidad y compatibilidad.
+4. Propón la solución más pequeña, reversible y compatible con el backend como
+   autoridad final.
+5. Indica qué pruebas y documentación deben actualizarse. Si falta una decisión
+   funcional que cambie el contrato o una regla de negocio, pregunta antes de
+   editar.
+
+Durante la implementación:
+
+- Mantén cambios pequeños, enfocados y fáciles de revertir.
+- No modifiques APIs, permisos, datos, migraciones aplicadas, contratos o
+  dependencias sin justificarlo en la spec o en el reporte del cambio.
+- Conserva consultas preparadas, validación server-side, autorización,
+  transacciones, idempotencia y protección de secretos.
+- Respeta la separación entre backend, frontend y base de datos; el frontend no
+  concede autorización.
+- Explica los supuestos y las decisiones que puedan afectar consumidores de la
+  API, datos existentes o procesos de migración.
+
+Después de modificar código:
+
+- Actualiza la spec relacionada y la documentación afectada, sin duplicar el
+  contenido operativo que ya pertenece a `README.md` o `TESTING.md`.
+- Ejecuta las pruebas pertinentes: `npm test`, `node --check server.js`,
+  `npm run test:loopback`, las suites MariaDB aisladas cuando correspondan y
+  `git diff --check`.
+- Distingue fallos funcionales de problemas de infraestructura como `EACCES`,
+  `EPERM`, `fetch failed`, MariaDB no disponible o servicios locales ausentes.
+- Informa archivos modificados, comandos ejecutados, resultados, limitaciones y
+  revisión manual pendiente.
+- No marques una spec como `completed` sin implementación, pruebas y revisión
+  humana.
+
+Modo mentor:
+
+- Explica con ejemplos sencillos la diferencia entre validar una entrada en el
+  navegador y validarla en el servidor, y entre una transacción confirmada y
+  una operación parcial.
+- Relaciona cada cambio con su beneficio práctico y menciona ventajas,
+  desventajas y dudas pendientes.
+- No ocultes incertidumbres ni presentes una verificación no ejecutada como
+  aprobada.
+
 ## Comandos oficiales
 
 Ejecuta los comandos desde la raíz de este repositorio:
@@ -63,6 +115,11 @@ Las suites que requieren MariaDB son `TEST_CONSULTA_MYSQL`,
 `TEST_RECEPCION_RENDIMIENTO_MYSQL` y `TEST_TRASLADOS_MYSQL`. No se deben
 activar contra una base real o productiva.
 
+Las pruebas visuales con Playwright pertenecen al repositorio frontend y usan
+Microsoft Edge con mocks HTTP; no deben iniciar el backend, modificar esta
+base de datos ni depender de usuarios o datos persistentes. El descubrimiento
+de pruebas (`--list`) solo enumera casos y no equivale a una ejecución exitosa.
+
 Cuando una suite levante servidores locales o haga `fetch` a `127.0.0.1` o
 `localhost`, solicita permisos ampliados antes de ejecutarla si el entorno
 restringido bloquea el loopback. Un `fetch failed` acompañado de una causa
@@ -76,6 +133,13 @@ entorno de ejecución, no un fallo funcional del endpoint. Las suites MySQL son
 opcionales y deben ejecutarse por separado con la variable `TEST_*_MYSQL`
 correspondiente, por ejemplo `TEST_INTEGRIDAD_MYSQL`, `TEST_CONSULTA_MYSQL`,
 `TEST_TRASLADOS_MYSQL` o `TEST_LOGIN_MYSQL`, siempre sobre una base aislada.
+
+Cuando una verificación frontend requiera Vite o Playwright, la clasificación
+de infraestructura debe conservar la evidencia concreta: `EACCES`, `EPERM`,
+`fetch failed`, puerto ocupado, servicio local no disponible o navegador no
+disponible. No se debe ocultar un fallo funcional bajo esa clasificación ni
+reportar éxito porque las pruebas solo hayan sido descubiertas. No se debe
+desactivar la validación TLS para corregir estos problemas.
 
 ## Flujo Spec-Driven Development
 

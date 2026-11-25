@@ -1,7 +1,8 @@
 ---
 id: FEAT-CONSULTA
 title: Consulta de radicados
-status: baseline
+status: implementing
+kind: baseline
 risk: high
 repositories:
   - backend

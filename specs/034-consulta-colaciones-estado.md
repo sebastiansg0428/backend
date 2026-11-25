@@ -1,7 +1,7 @@
 ---
 id: BUG-CONSULTA-COLLATIONS-ESTADO
 title: Compatibilidad de colaciones en consulta de radicados
-status: completed
+status: implementing
 risk: low
 ---
 

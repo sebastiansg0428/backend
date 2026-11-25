@@ -31,14 +31,13 @@ texto o estilos basta con mantener la documentación existente.
 
 ## Ciclo de vida
 
-- `draft`: en elaboración.
-- `approved`: revisada y aprobada para implementación.
-- `implementing`: en desarrollo.
-- `implemented`: código y tests terminados, con revisión humana.
-- `superseded`: reemplazada por otra spec.
+- `proposed`: definida, pero todavía no implementada.
+- `implementing`: en desarrollo o pendiente de completar sus verificaciones.
+- `completed`: implementación, pruebas y revisión humana registradas.
 
-Una spec no debe pasar directamente de `draft` a `implemented` sin criterios de
-aceptación y evidencia de pruebas.
+`baseline` no es un estado: es una clasificación opcional para una spec que
+documenta comportamiento existente. Los estados históricos `draft`, `approved`,
+`implemented` y `superseded` no deben usarse en nuevas specs.
 
 ## Flujo de trabajo
 
@@ -50,7 +49,7 @@ aceptación y evidencia de pruebas.
 5. Obtener aprobación.
 6. Implementar y enlazar cada criterio con tests.
 7. Registrar resultados, riesgos pendientes y rollback.
-8. Marcar `implemented` solo tras revisión humana.
+8. Marcar `completed` solo tras revisión humana.
 
 ## Convención de nombres
 

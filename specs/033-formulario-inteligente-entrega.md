@@ -1,7 +1,7 @@
 ---
 id: FEAT-FORMULARIO-INTELIGENTE-ENTREGA
 title: Formulario inteligente de envío y entrega
-status: completed
+status: implementing
 risk: medium
 repositories:
   - backend

@@ -19,6 +19,7 @@ const { validarClave, huellaSolicitud, buscarIntento, reservarIntento, confirmar
 const { router: trasladosRouter, cancelarTrasladoPendiente } = require('./traslados');
 const { crearRouterEntregas } = require('./entregas-respuesta');
 const { crearRouterInternas, registrarRecepcionInterna, internaIndividual } = require('./respuestas-internas');
+const { esGlobalExterno, puedeVerContenidoGlobal, resumirAsignaciones } = require('./globales');
 const {
     router: authRouter, autenticar, permitirRoles, filtroDependencia, filtroLecturaRadicado,
     filtroGestionRadicado, autorizarRadicado, autorizarGestionRadicado
@@ -42,6 +43,54 @@ if (!fs.existsSync(uploadDir)) {
 const uploadRespuestasDir = path.join(uploadDir, 'respuestas');
 if (!fs.existsSync(uploadRespuestasDir)) {
     fs.mkdirSync(uploadRespuestasDir, { recursive: true });
+}
+
+async function registrarAperturaDocumentoOriginal(req, documento) {
+    if (req.usuario.rol !== 'funcionario' || !documento?.radicado_dependencia_id) return;
+
+    let connection;
+    try {
+        connection = await pool.getConnection();
+        await connection.beginTransaction();
+        const [asignaciones] = await connection.execute(
+            `SELECT rd.id, rd.dependencia_id, d.nombre AS dependencia_nombre
+             FROM radicado_dependencias rd
+             INNER JOIN dependencias d ON d.id = rd.dependencia_id
+             WHERE rd.id = ? AND rd.numero_radicado = ? AND rd.dependencia_id = ?
+             FOR UPDATE`,
+            [documento.radicado_dependencia_id, documento.numero_radicado, req.usuario.dependencia_id]
+        );
+        if (!asignaciones.length) {
+            await connection.commit();
+            return;
+        }
+        const asignacion = asignaciones[0];
+        const [eventos] = await connection.execute(
+            `SELECT id FROM historial_radicado
+             WHERE numero_radicado = ? AND radicado_dependencia_id = ?
+               AND event_type = 'documento_original_abierto'
+             LIMIT 1`,
+            [documento.numero_radicado, asignacion.id]
+        );
+        if (!eventos.length) {
+            await registrarEventoRadicado(connection, req, {
+                numeroRadicado: documento.numero_radicado,
+                tipo: 'documento_original_abierto',
+                motivo: 'La dependencia abrió correctamente el documento original.',
+                dependenciaId: asignacion.dependencia_id,
+                dependenciaNombre: asignacion.dependencia_nombre,
+                radicadoDependenciaId: asignacion.id
+            });
+        }
+        await connection.commit();
+    } catch (error) {
+        if (connection) {
+            try { await connection.rollback(); } catch { /* conserva el error original */ }
+        }
+        throw error;
+    } finally {
+        if (connection) connection.release();
+    }
 }
 
 app.use('/api', authRouter);
@@ -97,6 +146,34 @@ app.use('/uploads', autenticar, async (req, res, next) => {
         );
         if (!rows.length) {
             return responderError(res, 404, 'Archivo no encontrado o fuera de tu dependencia.');
+        }
+        if (req.usuario.rol === 'funcionario' && !rutaNormalizada.startsWith('respuestas/')) {
+            const [documentosOriginales] = await pool.execute(
+                `SELECT r.numero_radicado, r.destino_todas_dependencias,
+                        r.tipo_comunicacion, r.requiere_respuesta,
+                        r.dependencia_responsable_id,
+                        rd.id AS radicado_dependencia_id
+                 FROM radicados r
+                 INNER JOIN documentos_radicado ddoc
+                    ON ddoc.numero_radicado = r.numero_radicado
+                   AND ddoc.ruta_archivo = ?
+                 LEFT JOIN radicado_dependencias rd
+                    ON rd.numero_radicado = r.numero_radicado
+                   AND rd.dependencia_id = ?
+                 WHERE ddoc.ruta_archivo = ?
+                 LIMIT 1`,
+                [nombreArchivo, req.usuario.dependencia_id, nombreArchivo]
+            );
+            const documento = documentosOriginales[0];
+            if (documento && esGlobalExterno(documento)) {
+                try {
+                    await fs.promises.access(rutaFisica, fs.constants.R_OK);
+                } catch (error) {
+                    if (error.code === 'ENOENT') return responderError(res, 404, 'Archivo no encontrado.');
+                    throw error;
+                }
+                await registrarAperturaDocumentoOriginal(req, documento);
+            }
         }
         return next();
     } catch (error) {
@@ -312,6 +389,7 @@ app.post('/api/radicados', permitirRoles('administrador', 'ventanilla'), validar
             numero_folios,
             dependencia_destino_id,
             dependencia_destino,
+            dependencia_responsable_id,
             asunto_documento,
             usuario_recibe
         } = req.body;
@@ -464,14 +542,44 @@ app.post('/api/radicados', permitirRoles('administrador', 'ventanilla'), validar
         }
         const tipoComunicacion = tipo_comunicacion;
         const exigeRespuesta = requiereRespuesta(termino);
+        let dependenciaResponsable = null;
+        if (destinoTodasDependencias) {
+            const esExternoConRespuesta = tipoComunicacion === 'Externa' && exigeRespuesta;
+            const esInternoInformativo = tipoComunicacion === 'Interna' && !exigeRespuesta;
+            if (!esExternoConRespuesta && !esInternoInformativo) {
+                archivos.forEach(eliminarArchivoSubido);
+                return responderError(res, 422, 'Los globales internos deben ser informativos y los globales externos deben requerir respuesta según su término vigente.');
+            }
+            if (esExternoConRespuesta) {
+                const idResponsable = Number(dependencia_responsable_id);
+                if (!Number.isSafeInteger(idResponsable) || idResponsable < 1) {
+                    archivos.forEach(eliminarArchivoSubido);
+                    return responderError(res, 400, 'Selecciona una dependencia responsable para el global externo.');
+                }
+                const [responsables] = await consultaCatalogos.execute(
+                    'SELECT id, nombre FROM dependencias WHERE id = ? AND activo = 1', [idResponsable]
+                );
+                dependenciaResponsable = responsables[0];
+                if (!dependenciaResponsable) {
+                    archivos.forEach(eliminarArchivoSubido);
+                    return responderError(res, 422, 'La dependencia responsable debe estar activa en el catálogo.');
+                }
+            } else if (dependencia_responsable_id !== undefined && dependencia_responsable_id !== '') {
+                archivos.forEach(eliminarArchivoSubido);
+                return responderError(res, 400, 'Los globales informativos no tienen dependencia responsable.');
+            }
+        } else if (dependencia_responsable_id !== undefined && dependencia_responsable_id !== '') {
+            archivos.forEach(eliminarArchivoSubido);
+            return responderError(res, 400, 'La dependencia responsable solo aplica a globales externos.');
+        }
         const fechaLimite = exigeRespuesta ? agregarDias(fechaRecepcion, termino.dias, termino.tipo_dias) : null;
         const tiempoRespuesta = exigeRespuesta ? obtenerTiempoRespuesta(termino) : 'No requiere respuesta';
         const query = `
             INSERT INTO radicados 
-            (numero_radicado, tipo_recepcion, tipo_comunicacion, tipo_documento, tiempo_de_respuesta, remitente_nombre, remitente_documento, remitente_entidad, remitente_nit, remitente_telefono, remitente_email, numero_folios, fecha_hora_recepcion, dependencia_destino, asunto_documento, usuario_recibe, dependencia_destino_id, destino_todas_dependencias, dependencia_remitente_id, dependencia_remitente, remitente_tipo_persona, requiere_respuesta)
+            (numero_radicado, tipo_recepcion, tipo_comunicacion, tipo_documento, tiempo_de_respuesta, remitente_nombre, remitente_documento, remitente_entidad, remitente_nit, remitente_telefono, remitente_email, numero_folios, fecha_hora_recepcion, dependencia_destino, asunto_documento, usuario_recibe, dependencia_destino_id, destino_todas_dependencias, dependencia_responsable_id, dependencia_remitente_id, dependencia_remitente, remitente_tipo_persona, requiere_respuesta)
             VALUES (?, ?, ?, ?, ?,
                     ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                    ?, ?, ?, ?, ?, ?, ?, ?)
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `;
 
         let connection = conexionIntento || await pool.getConnection();
@@ -529,6 +637,7 @@ app.post('/api/radicados', permitirRoles('administrador', 'ventanilla'), validar
                 req.usuario.nombre,
                 dependencia.id,
                 destinoTodasDependencias ? 1 : 0,
+                dependenciaResponsable?.id ?? null,
                 dependenciaRemitente?.id ?? null,
                 dependenciaRemitente?.nombre ?? null,
                 tipoComunicacion === 'Externa' ? remitente_tipo_persona : null,
@@ -649,6 +758,8 @@ app.post('/api/radicados', permitirRoles('administrador', 'ventanilla'), validar
                 dependencia_remitente: dependenciaRemitente?.nombre ?? null,
                 remitente_tipo_persona: tipoComunicacion === 'Externa' ? remitente_tipo_persona : null,
                 destino_todas_dependencias: destinoTodasDependencias,
+                dependencia_responsable_id: dependenciaResponsable?.id ?? null,
+                dependencia_responsable: dependenciaResponsable?.nombre ?? null,
                 requiere_respuesta: exigeRespuesta,
                 termino: exigeRespuesta ? {
                     dias: termino.dias, tipo_dias: termino.tipo_dias,
@@ -975,6 +1086,9 @@ app.get('/api/radicados', async (req, res) => {
         if (opciones.vista === 'generados' && req.usuario.rol !== 'funcionario') {
             return responderError(res, 403, 'Solo los funcionarios pueden consultar los radicados internos de origen de su dependencia.');
         }
+        if (opciones.presentacion === 'agrupada' && req.usuario.rol === 'funcionario') {
+            return responderError(res, 403, 'La presentación agrupada está disponible para Ventanilla y Administrador.');
+        }
         try {
             return res.json(await consultarPagina(pool, req.usuario, opciones));
         } catch (error) {
@@ -1045,6 +1159,102 @@ app.get('/api/radicados', async (req, res) => {
     } catch (error) {
         console.error("❌ Error al consultar radicados:", error);
         return responderError(res, 500, 'Error interno al obtener los radicados.');
+    }
+});
+
+app.patch(
+    '/api/radicados/:numero_radicado/dependencia-responsable',
+    permitirRoles('administrador', 'ventanilla'),
+    autorizarGestionRadicado,
+    async (req, res) => {
+        const idResponsable = Number(req.body?.dependencia_responsable_id);
+        if (!Number.isSafeInteger(idResponsable) || idResponsable < 1) {
+            return responderError(res, 400, 'dependencia_responsable_id debe ser un entero positivo.');
+        }
+        let connection;
+        try {
+            connection = await pool.getConnection();
+            await connection.beginTransaction();
+            const [radicados] = await connection.execute(
+                `SELECT r.numero_radicado, r.tipo_comunicacion, r.destino_todas_dependencias,
+                        r.requiere_respuesta, r.dependencia_responsable_id,
+                        EXISTS (SELECT 1 FROM respuestas_radicado rr WHERE rr.numero_radicado = r.numero_radicado) AS tiene_respuesta
+                 FROM radicados r WHERE r.numero_radicado = ? FOR UPDATE`,
+                [req.params.numero_radicado]
+            );
+            if (!radicados.length) {
+                await connection.rollback();
+                return responderError(res, 404, 'Radicado no encontrado.');
+            }
+            const radicado = radicados[0];
+            if (!esGlobalExterno(radicado)) {
+                await connection.rollback();
+                return responderError(res, 409, 'Solo los globales externos con respuesta única tienen responsable corregible.');
+            }
+            if (radicado.tiene_respuesta) {
+                await connection.rollback();
+                return responderError(res, 409, 'La dependencia responsable queda bloqueada después de registrar la respuesta.');
+            }
+            const [dependenciasResponsables] = await connection.execute(
+                'SELECT id, nombre FROM dependencias WHERE id = ? AND activo = 1', [idResponsable]
+            );
+            if (!dependenciasResponsables.length) {
+                await connection.rollback();
+                return responderError(res, 422, 'La dependencia responsable debe estar activa.');
+            }
+            await connection.execute(
+                'UPDATE radicados SET dependencia_responsable_id = ? WHERE numero_radicado = ?',
+                [idResponsable, req.params.numero_radicado]
+            );
+            await registrarEventoRadicado(connection, req, {
+                numeroRadicado: req.params.numero_radicado,
+                tipo: 'dependencia_responsable_corregida',
+                valorAnterior: radicado.dependencia_responsable_id == null ? null : String(radicado.dependencia_responsable_id),
+                valorNuevo: String(idResponsable),
+                dependenciaId: idResponsable,
+                dependenciaNombre: dependenciasResponsables[0].nombre,
+                motivo: 'Se corrigió la dependencia responsable del global externo antes de su respuesta.'
+            });
+            await connection.commit();
+            return res.json({ success: true, dependencia_responsable_id: idResponsable, dependencia_responsable: dependenciasResponsables[0].nombre });
+        } catch (error) {
+            if (connection) await connection.rollback().catch(() => {});
+            console.error('Error al corregir dependencia responsable:', error);
+            return responderError(res, 500, 'No se pudo corregir la dependencia responsable.');
+        } finally {
+            if (connection) connection.release();
+        }
+    }
+);
+
+app.get('/api/radicados/:numero_radicado/seguimiento-global', autorizarRadicado, async (req, res) => {
+    try {
+        const [radicados] = await pool.execute(
+            `SELECT r.numero_radicado, r.tipo_comunicacion, r.requiere_respuesta,
+                    r.destino_todas_dependencias, r.estado, r.dependencia_responsable_id,
+                    dresp.nombre AS dependencia_responsable,
+                    EXISTS (SELECT 1 FROM respuestas_radicado rr WHERE rr.numero_radicado = r.numero_radicado) AS respuesta_disponible
+             FROM radicados r
+             LEFT JOIN dependencias dresp ON dresp.id = r.dependencia_responsable_id
+             WHERE r.numero_radicado = ?`, [req.params.numero_radicado]
+        );
+        if (!radicados.length || !radicados[0].destino_todas_dependencias) return responderError(res, 404, 'El radicado no tiene seguimiento global.');
+        const [asignaciones] = await pool.execute(
+            `SELECT rd.id AS radicado_dependencia_id, rd.dependencia_id,
+                    d.nombre AS dependencia_nombre, rd.estado,
+                    rd.fecha_respuesta, rd.fecha_enterado
+             FROM radicado_dependencias rd JOIN dependencias d ON d.id = rd.dependencia_id
+             WHERE rd.numero_radicado = ? ORDER BY d.nombre`, [req.params.numero_radicado]
+        );
+        const resumen = resumirAsignaciones(asignaciones, radicados[0]);
+        return res.json({ success: true, radicado: radicados[0], asignaciones, resumen,
+            contenido_respuesta_visible: puedeVerContenidoGlobal({
+                rol: req.usuario.rol, dependenciaId: req.usuario.dependencia_id,
+                responsableId: radicados[0].dependencia_responsable_id
+            }) });
+    } catch (error) {
+        console.error('Error al consultar seguimiento global:', error);
+        return responderError(res, 500, 'No se pudo consultar el seguimiento global.');
     }
 });
 
@@ -1184,7 +1394,9 @@ app.get('/api/radicados/:numero_radicado/documentos', autorizarRadicado, async (
 async function resolverConsultaRespuesta(req, res, next) {
     try {
         const [radicados] = await pool.execute(
-            'SELECT destino_todas_dependencias, dependencia_destino FROM radicados WHERE numero_radicado = ?',
+            `SELECT destino_todas_dependencias, dependencia_destino, tipo_comunicacion,
+                    requiere_respuesta, dependencia_responsable_id
+             FROM radicados WHERE numero_radicado = ?`,
             [req.params.numero_radicado]
         );
         if (!radicados.length) return responderError(res, 404, 'Radicado no encontrado.');
@@ -1196,9 +1408,26 @@ async function resolverConsultaRespuesta(req, res, next) {
         }
         let idAsignacion = null;
         let dependenciaResponsable = radicados[0].dependencia_destino;
+        const globalExterno = esGlobalExterno(radicados[0]);
+        let contenidoVisible = true;
         if (radicados[0].destino_todas_dependencias) {
             let asignaciones;
-            if (req.usuario.rol === 'funcionario') {
+            if (globalExterno) {
+                [asignaciones] = await pool.execute(
+                    `SELECT rd.id, rd.dependencia_id, d.nombre
+                     FROM radicado_dependencias rd
+                     LEFT JOIN dependencias d ON d.id = rd.dependencia_id
+                     WHERE rd.numero_radicado = ? AND rd.dependencia_id = ?`,
+                    [req.params.numero_radicado, radicados[0].dependencia_responsable_id]
+                );
+                contenidoVisible = puedeVerContenidoGlobal({
+                    rol: req.usuario.rol, dependenciaId: req.usuario.dependencia_id,
+                    responsableId: radicados[0].dependencia_responsable_id
+                });
+                if (solicitado !== undefined && (!asignaciones.length || String(asignaciones[0].id) !== solicitado)) {
+                    return responderError(res, 403, 'La respuesta global solo puede consultarse en la dependencia responsable.');
+                }
+            } else if (req.usuario.rol === 'funcionario') {
                 [asignaciones] = await pool.execute(
                     `SELECT rd.id, d.nombre FROM radicado_dependencias rd
                      LEFT JOIN dependencias d ON d.id = rd.dependencia_id
@@ -1225,7 +1454,7 @@ async function resolverConsultaRespuesta(req, res, next) {
         } else if (solicitado !== undefined) {
             return responderError(res, 400, 'Este radicado no tiene seguimiento global.');
         }
-        res.locals.consultaRespuesta = { idAsignacion, dependenciaResponsable };
+        res.locals.consultaRespuesta = { idAsignacion, dependenciaResponsable, contenidoVisible };
         return next();
     } catch (error) {
         console.error('Error al resolver la dependencia de respuesta:', error);
@@ -1262,7 +1491,8 @@ app.get('/api/radicados/:numero_radicado/respuesta/resumen', autorizarRadicado, 
 // autorizarRadicado mantiene a los funcionarios limitados a su dependencia.
 app.get('/api/radicados/:numero_radicado/respuesta', autorizarRadicado, resolverConsultaRespuesta, async (req, res) => {
     try {
-        const { idAsignacion, dependenciaResponsable } = res.locals.consultaRespuesta;
+        const { idAsignacion, dependenciaResponsable, contenidoVisible } = res.locals.consultaRespuesta;
+        if (!contenidoVisible) return responderError(res, 403, 'La respuesta existe, pero su contenido solo está disponible para Ventanilla, Administrador y la dependencia responsable.');
         const [respuestas] = await pool.execute(
             `SELECT rr.id, rr.numero_radicado, rr.contenido, rr.plantilla,
                     rr.fecha_envio, u.nombre AS funcionario_nombre,
@@ -1446,7 +1676,7 @@ app.post(
             const [radicados] = await connection.execute(
                 `SELECT r.estado, r.destino_todas_dependencias, r.requiere_respuesta,
                         r.dependencia_destino_id, r.dependencia_destino, r.tipo_comunicacion,
-                        r.dependencia_remitente_id FROM radicados r
+                        r.dependencia_remitente_id, r.dependencia_responsable_id FROM radicados r
                  WHERE r.numero_radicado = ? AND ${filtro.sql} FOR UPDATE`,
                 [numeroRadicado, ...filtro.valores]
             );
@@ -1472,7 +1702,37 @@ app.post(
             let dependenciaEventoNombre = radicados[0].dependencia_destino ?? null;
             if (radicados[0].destino_todas_dependencias) {
                 let dependenciaObjetivo = req.usuario.dependencia_id;
-                if (req.usuario.rol !== 'funcionario') {
+                const globalExterno = esGlobalExterno(radicados[0]);
+                if (globalExterno) {
+                    if (req.usuario.rol === 'funcionario' && Number(req.usuario.dependencia_id) !== Number(radicados[0].dependencia_responsable_id)) {
+                        reversionIntentada = true;
+                        await connection.rollback(); (req.files || []).forEach(eliminarArchivoSubido);
+                        return responderError(res, 403, 'Solo la dependencia responsable puede responder este global externo.');
+                    }
+                    dependenciaObjetivo = Number(radicados[0].dependencia_responsable_id);
+                    if (!Number.isSafeInteger(dependenciaObjetivo) || dependenciaObjetivo < 1) {
+                        reversionIntentada = true;
+                        await connection.rollback(); (req.files || []).forEach(eliminarArchivoSubido);
+                        return responderError(res, 409, 'Este global externo no tiene una dependencia responsable configurada.');
+                    }
+                    const idSolicitado = req.body.radicado_dependencia_id === undefined
+                        ? null : Number(req.body.radicado_dependencia_id);
+                    const [objetivos] = await connection.execute(
+                        `SELECT rd.id, rd.estado, rd.dependencia_id, d.nombre AS dependencia_nombre
+                         FROM radicado_dependencias rd JOIN dependencias d ON d.id = rd.dependencia_id
+                         WHERE rd.numero_radicado = ? AND rd.dependencia_id = ? FOR UPDATE`,
+                        [numeroRadicado, dependenciaObjetivo]
+                    );
+                    if (!objetivos.length || (idSolicitado !== null && objetivos[0].id !== idSolicitado)) {
+                        reversionIntentada = true;
+                        await connection.rollback(); (req.files || []).forEach(eliminarArchivoSubido);
+                        return responderError(res, 404, 'La asignación responsable no existe.');
+                    }
+                    idAsignacion = objetivos[0].id;
+                    estadoActual = objetivos[0].estado;
+                    dependenciaEventoId = objetivos[0].dependencia_id;
+                    dependenciaEventoNombre = objetivos[0].dependencia_nombre;
+                } else if (req.usuario.rol !== 'funcionario') {
                     const idSolicitado = Number(req.body.radicado_dependencia_id);
                     if (!Number.isSafeInteger(idSolicitado) || idSolicitado < 1) {
                         reversionIntentada = true;
@@ -1522,10 +1782,12 @@ app.post(
             }
             if (!idAsignacion) await cancelarTrasladoPendiente(connection, req, numeroRadicado);
             const [existente] = await connection.execute(
-                idAsignacion
+                radicados[0].destino_todas_dependencias && esGlobalExterno(radicados[0])
+                    ? 'SELECT id FROM respuestas_radicado WHERE numero_radicado = ? LIMIT 1'
+                    : idAsignacion
                     ? 'SELECT id FROM respuestas_radicado WHERE radicado_dependencia_id = ? LIMIT 1'
                     : 'SELECT id FROM respuestas_radicado WHERE numero_radicado = ? AND radicado_dependencia_id IS NULL LIMIT 1',
-                [idAsignacion || numeroRadicado]
+                [radicados[0].destino_todas_dependencias && esGlobalExterno(radicados[0]) ? numeroRadicado : (idAsignacion || numeroRadicado)]
             );
             if (existente.length) {
                 reversionIntentada = true;
@@ -1631,6 +1893,7 @@ app.put(
             const filtro = filtroGestionRadicado(req.usuario, 'radicados');
             const [actuales] = await connection.execute(
                 `SELECT estado, destino_todas_dependencias, requiere_respuesta,
+                        tipo_comunicacion, dependencia_responsable_id,
                         dependencia_destino_id, dependencia_destino
                  FROM radicados
                  WHERE numero_radicado = ? AND ${filtro.sql} FOR UPDATE`,
@@ -1643,6 +1906,7 @@ app.put(
             }
 
             let idAsignacion = null;
+            let dependenciaAsignacionId = actuales[0].dependencia_destino_id ?? null;
             let estadoAnterior = actuales[0].estado;
             let dependenciaEventoId = actuales[0].dependencia_destino_id ?? null;
             let dependenciaEventoNombre = actuales[0].dependencia_destino ?? null;
@@ -1661,6 +1925,7 @@ app.put(
                         return responderError(res, 404, 'El radicado no está asignado a tu dependencia.');
                     }
                     idAsignacion = asignaciones[0].id;
+                    dependenciaAsignacionId = asignaciones[0].dependencia_id;
                     estadoAnterior = asignaciones[0].estado;
                     dependenciaEventoId = asignaciones[0].dependencia_id;
                     dependenciaEventoNombre = asignaciones[0].dependencia_nombre;
@@ -1684,6 +1949,7 @@ app.put(
                         return responderError(res, 404, 'La asignación de dependencia no existe.');
                     }
                     idAsignacion = asignaciones[0].id;
+                    dependenciaAsignacionId = asignaciones[0].dependencia_id;
                     estadoAnterior = asignaciones[0].estado;
                     dependenciaEventoId = asignaciones[0].dependencia_id;
                     dependenciaEventoNombre = asignaciones[0].dependencia_nombre;
@@ -1699,10 +1965,18 @@ app.put(
                 await connection.rollback();
                 return responderError(res, 409, 'No se puede volver a Recibido después de avanzar el estado del radicado.');
             }
-            if (estadoNuevo === 'Enterado' && requiereRespuesta(actuales[0])) {
+            const globalExternoNoResponsable = req.usuario.rol === 'funcionario' &&
+                esGlobalExterno(actuales[0]) &&
+                Number(dependenciaAsignacionId) !== Number(actuales[0].dependencia_responsable_id);
+            if (estadoNuevo === 'Enterado' && requiereRespuesta(actuales[0]) && !globalExternoNoResponsable) {
                 reversionIntentada = true;
                 await connection.rollback();
                 return responderError(res, 409, 'Este radicado requiere una respuesta institucional, no puede cerrarse como Enterado.');
+            }
+            if (globalExternoNoResponsable && !['Recibido', 'Enterado'].includes(estadoNuevo)) {
+                reversionIntentada = true;
+                await connection.rollback();
+                return responderError(res, 409, 'Las dependencias no responsables de un global externo solo pueden permanecer en Recibido o pasar a Enterado al abrir el documento.');
             }
             if (req.usuario.rol === 'funcionario' && !requiereRespuesta(actuales[0]) &&
                 !['Recibido', 'Enterado'].includes(estadoNuevo)) {

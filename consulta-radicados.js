@@ -2,6 +2,7 @@ const { filtroDependencia } = require('./auth');
 const { agregarDias, obtenerFechaLocal } = require('./semaforo');
 const { revertirTrasError } = require('./transacciones');
 const { presentarRadicadoEnFecha } = require('./presentacion-radicado');
+const { resumirAsignaciones } = require('./globales');
 
 const FROM = `FROM radicados AS r
     LEFT JOIN radicado_dependencias rd
@@ -26,7 +27,9 @@ const SELECT = `r.*, ${TERMINO},
         WHERE st.numero_radicado = r.numero_radicado AND st.estado = 'pendiente'
     )) AS traslado_pendiente,
     rd.dependencia_id AS seguimiento_dependencia_id,
-    d.nombre AS seguimiento_dependencia_nombre`;
+    d.nombre AS seguimiento_dependencia_nombre,
+    EXISTS (SELECT 1 FROM respuestas_radicado rr
+        WHERE rr.numero_radicado = r.numero_radicado) AS respuesta_disponible`;
 const ORDEN = `ORDER BY COALESCE(r.fecha_hora_recepcion, r.fecha_creacion) DESC,
     r.numero_radicado DESC, COALESCE(rd.id, 0) DESC`;
 const FECHA = 'COALESCE(r.fecha_hora_recepcion, r.fecha_creacion)';
@@ -63,8 +66,39 @@ function opcionesConsulta(query) {
     if (!['recibidos', 'generados'].includes(vista)) {
         throw new TypeError('vista debe ser recibidos o generados.');
     }
+    const presentacion = query.presentacion ?? 'detallada';
+    if (!['detallada', 'agrupada'].includes(presentacion)) {
+        throw new TypeError('presentacion debe ser detallada o agrupada.');
+    }
     return { pagina, limite, busqueda: busqueda.trim(), clase,
-        hoy: booleano('hoy'), criticos: booleano('criticos'), vista };
+        hoy: booleano('hoy'), criticos: booleano('criticos'), vista,
+        ...(query.presentacion !== undefined ? { presentacion } : {}) };
+}
+
+function agruparRadicados(rows) {
+    const grupos = new Map();
+    for (const row of rows) {
+        if (!grupos.has(row.numero_radicado)) {
+            const grupo = { ...row, global_agrupado: Boolean(row.destino_todas_dependencias), asignaciones: [] };
+            delete grupo.radicado_dependencia_id;
+            delete grupo.seguimiento_dependencia_id;
+            delete grupo.seguimiento_dependencia_nombre;
+            grupos.set(row.numero_radicado, grupo);
+        }
+        const grupo = grupos.get(row.numero_radicado);
+        if (row.radicado_dependencia_id) grupo.asignaciones.push({
+            radicado_dependencia_id: row.radicado_dependencia_id,
+            dependencia_id: row.seguimiento_dependencia_id,
+            dependencia_nombre: row.seguimiento_dependencia_nombre,
+            estado: row.seguimiento_estado || row.estado || 'Recibido',
+            fecha_respuesta: row.seguimiento_fecha_respuesta,
+            fecha_enterado: row.seguimiento_fecha_enterado
+        });
+    }
+    return [...grupos.values()].map(grupo => ({
+        ...grupo,
+        resumen_global: grupo.global_agrupado ? resumirAsignaciones(grupo.asignaciones, grupo) : null
+    }));
 }
 
 function construirFiltros(usuario, opciones, fecha, dependenciaId = null) {
@@ -169,6 +203,15 @@ async function consultarPagina(pool, usuario, opciones, dependenciaId = null, so
                         '(r.numero_radicado = ? AND COALESCE(rd.id, 0) = ?)').join(' OR ')}) ${ORDEN}`,
                     [...valoresBase, ...claves.flat()]);
             }
+        } else if (opciones.presentacion === 'agrupada') {
+            let todas;
+            [todas] = await connection.execute(
+                `SELECT ${SELECT} ${FROM} WHERE ${base} AND ${filtro} ${ORDEN}`,
+                [...valoresBase, ...valoresFiltro]
+            );
+            const grupos = agruparRadicados(todas);
+            total = grupos.length;
+            rows = grupos.slice(inicio, inicio + opciones.limite);
         } else {
             const [totales] = await connection.execute(
                 `SELECT COUNT(*) AS total ${FROM} WHERE ${base} AND ${filtro}`,
@@ -178,7 +221,10 @@ async function consultarPagina(pool, usuario, opciones, dependenciaId = null, so
                 `SELECT ${SELECT} ${FROM} WHERE ${base} AND ${filtro} ${ORDEN} LIMIT ? OFFSET ?`,
                 [...valoresBase, ...valoresFiltro, opciones.limite, inicio]);
         }
-        const datos = rows.map(presentar);
+        const datos = opciones.presentacion === 'agrupada'
+            ? rows.map(row => row.global_agrupado ? { ...row, semaforo: presentar(row).semaforo } : presentar(row))
+            : rows.map(presentar);
+        if (!soloAlertas && opciones.presentacion === 'agrupada') resumen.total = total;
         await connection.commit();
         enTransaccion = false;
         return { success: true, total, ...(!soloAlertas ? { resumen } : {}),
@@ -186,7 +232,7 @@ async function consultarPagina(pool, usuario, opciones, dependenciaId = null, so
             paginas: Math.ceil(total / opciones.limite),
             has_more: inicio + rows.length < total,
             ...(soloAlertas ? { alertas: datos, por_vencer: porVencer, vencidos }
-                : { radicados: datos, vista: opciones.vista }) };
+                : { radicados: datos, vista: opciones.vista, presentacion: opciones.presentacion }) };
     } catch (error) {
         if (enTransaccion) {
             const reversion = await revertirTrasError(connection, error);
@@ -199,4 +245,4 @@ async function consultarPagina(pool, usuario, opciones, dependenciaId = null, so
     }
 }
 
-module.exports = { opcionesConsulta, construirFiltros, consultarPagina, FROM, SELECT, ORDEN };
+module.exports = { opcionesConsulta, construirFiltros, consultarPagina, agruparRadicados, FROM, SELECT, ORDEN };

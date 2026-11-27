@@ -29,7 +29,8 @@ test('originales globales no dependen de respuestas; cada oficina conserva priva
     let oficinasRespondidas = [];
     t.mock.method(pool, 'execute', async (sql, valores) => {
         if (sql.includes('FROM usuarios u')) return [[usuarios.find(u => u.id === valores[0])]];
-        assert.match(sql, /SELECT r.id FROM radicados r/);
+        if (sql.includes('INNER JOIN documentos_radicado ddoc')) return [[]];
+        assert.match(sql, /SELECT r\.id FROM radicados r/);
         assert.doesNotMatch(sql, /LEFT JOIN/);
         assert.match(sql, /EXISTS \(\s*SELECT 1 FROM documentos_radicado ddoc\s*WHERE ddoc.numero_radicado = r.numero_radicado AND ddoc.ruta_archivo = \?\s*\) OR EXISTS/);
         assert.match(sql, /WHERE rr.numero_radicado = r.numero_radicado/);

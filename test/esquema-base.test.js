@@ -49,6 +49,9 @@ test('el esquema base y los ALTER de radicados cubren el contrato actual sin con
     assert.doesNotMatch(migracion021, /\b(?:DROP|UPDATE|DELETE|TRUNCATE)\b/i);
     columnas.add('requiere_respuesta');
     columnas.add('fecha_enterado');
+    const migracion031 = await fs.readFile(path.join(directorio, '031_responsable_global_externo.js'), 'utf8');
+    assert.match(migracion031, /NOMBRE_COLUMNA = 'dependencia_responsable_id'/);
+    columnas.add('dependencia_responsable_id');
     const server = await fs.readFile(path.join(__dirname, '..', 'server.js'), 'utf8');
     const inserciones = [...server.matchAll(/INSERT INTO radicados\s*\(([^)]+)\)/g)];
     assert.ok(inserciones.length > 0);

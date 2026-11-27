@@ -62,9 +62,12 @@ test('traslados HTTP/MySQL: permisos, concurrencia, reintentos y plazos en base 
     await require('../migrations/025_seguimiento_entrega').migrarEntregas(admin, { aplicar: true });
     await require('../migrations/026_documentos_entrega').migrarDocumentosEntrega(admin, { aplicar: true });
     await require('../migrations/029_fecha_real_entrega').migrarFechaRealEntrega(admin, { aplicar: true });
+    await require('../migrations/031_responsable_global_externo').migrar(admin, { aplicar: true });
     process.env.DB_NAME = nombre;
     process.env.UPLOAD_DIR = uploads;
     pool = require('../db');
+    const [[basePool]] = await pool.query('SELECT DATABASE() AS nombre');
+    assert.equal(basePool.nombre, nombre, 'El pool de traslados debe apuntar a la base temporal, nunca a ventanilla_unica.');
     const app = require('../server');
     const { crearSesion, revocarSesiones } = require('../auth');
     const { PDFDocument } = require('pdf-lib');

@@ -90,6 +90,7 @@ test('valida la estructura PDF en radicacion y respuestas sin alterar el almacen
         form.append('remitente_nombre', 'Remitente');
         form.append('remitente_documento', '123');
         form.append('dependencia_destino_id', destino);
+        if (destino === 'todas' && tipoComunicacion === 'Externa') form.append('dependencia_responsable_id', '2');
         form.append('tipo_tramite_id', '1');
         if (tipoComunicacion !== null) form.append('tipo_comunicacion', tipoComunicacion);
         if (tipoComunicacion === 'Interna') form.append('dependencia_remitente_id', '2');
@@ -226,10 +227,10 @@ test('valida la estructura PDF en radicacion y respuestas sin alterar el almacen
             assert.ok(escrituras.slice(escriturasAntes).some(({ sql }) => sql.includes(`INSERT INTO ${tabla}`)));
             const insertRadicado = escrituras.slice(escriturasAntes).find(({ sql }) => sql.includes('INSERT INTO radicados'));
             assert.equal(insertRadicado.valores[2], tipoComunicacion);
-            assert.equal(insertRadicado.valores.length, 22);
-            assert.equal((insertRadicado.sql.match(/\?/g) || []).length, 22);
-            assert.equal(insertRadicado.valores[21], 1);
-            assert.deepEqual(insertRadicado.valores.slice(18, 21), tipoComunicacion === 'Interna'
+            assert.equal(insertRadicado.valores.length, 23);
+            assert.equal((insertRadicado.sql.match(/\?/g) || []).length, 23);
+            assert.equal(insertRadicado.valores[22], 1);
+            assert.deepEqual(insertRadicado.valores.slice(19, 22), tipoComunicacion === 'Interna'
                 ? [2, 'Planeacion', null] : [null, null, 'natural']);
             assert.equal(resultado.dependencia_remitente, tipoComunicacion === 'Interna' ? 'Planeacion' : null);
         });
@@ -289,7 +290,7 @@ test('valida la estructura PDF en radicacion y respuestas sin alterar el almacen
         assert.equal(registro.valores[7], 'Empresa');
         assert.equal(registro.valores[8], '123456789012');
         assert.equal(registro.valores[10], 'remitente@example.com');
-        assert.deepEqual(registro.valores.slice(18, 21), [null, null, 'juridica']);
+        assert.deepEqual(registro.valores.slice(19, 22), [null, null, 'juridica']);
     });
     await t.test('radicacion global se guarda sin ID de dependencia y con marca compartida', async () => {
         const escriturasAntes = escrituras.length;
@@ -302,6 +303,7 @@ test('valida la estructura PDF en radicacion y respuestas sin alterar el almacen
         assert.equal(insertRadicado.valores[13], 'Todas las dependencias');
         assert.equal(insertRadicado.valores[16], null);
         assert.equal(insertRadicado.valores[17], 1);
+        assert.equal(insertRadicado.valores[18], 2);
     });
     await t.test('el campo singular archivo mantiene compatibilidad con radicacion', async () => {
         const respuesta = await subir('/api/radicados', [pdfClasico], 'archivo');
@@ -319,7 +321,7 @@ test('valida la estructura PDF en radicacion y respuestas sin alterar el almacen
             assert.equal(datos.requiere_respuesta, false);
             assert.equal(datos.termino, null);
             const registro = escrituras.filter(({ sql }) => sql.includes('INSERT INTO radicados')).at(-1);
-            assert.equal(registro.valores[21], 0);
+            assert.equal(registro.valores[22], 0);
             assert.equal(registro.valores[4], 'No requiere respuesta');
             const snapshot = escrituras.filter(({ sql }) => sql.includes('INSERT INTO radicado_terminos')).at(-1);
             assert.deepEqual(snapshot.valores.slice(2), [null, snapshot.valores[3], null, null, null, null, null]);

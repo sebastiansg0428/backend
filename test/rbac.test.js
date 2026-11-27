@@ -156,6 +156,7 @@ test('RBAC HTTP aplica permisos en listas, alertas, archivos, historial y escrit
     });
     t.mock.method(pool, 'execute', async (sql, values) => {
         if (sql.includes('FROM usuarios u')) return [[usuarios.get(values[0])].filter(Boolean)];
+        if (sql.includes('INNER JOIN documentos_radicado ddoc')) return [[]];
         if (sql.includes('SELECT r.id FROM radicados r')) {
             const esArchivo = sql.includes('FROM documentos_radicado ddoc');
             if (esArchivo) assert.deepEqual(values.slice(0, 3), [values[0], values[0], values[0]]);

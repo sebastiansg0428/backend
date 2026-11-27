@@ -108,15 +108,23 @@ async function limpiar(archivos) {
 }
 async function respuestaElegible(c, numero, bloquear = false) {
     const [radicados] = await c.execute(
-        `SELECT numero_radicado,tipo_comunicacion,destino_todas_dependencias FROM radicados
+        `SELECT numero_radicado,tipo_comunicacion,destino_todas_dependencias,
+                dependencia_responsable_id FROM radicados
          WHERE numero_radicado=?${bloquear ? ' FOR UPDATE' : ''}`, [numero]);
     if (!radicados.length) throw fallo(404, 'Radicado no encontrado.');
     const r = radicados[0];
-    if (Number(r.destino_todas_dependencias) || String(r.tipo_comunicacion).trim().toLowerCase() !== 'externa') {
-        throw fallo(409, 'Solo se registra entrega para respuestas externas individuales.');
+    const esGlobalExterno = Number(r.destino_todas_dependencias) === 1 &&
+        String(r.tipo_comunicacion).trim().toLowerCase() === 'externa' &&
+        Number(r.dependencia_responsable_id) > 0;
+    if ((!esGlobalExterno && Number(r.destino_todas_dependencias)) || String(r.tipo_comunicacion).trim().toLowerCase() !== 'externa') {
+        throw fallo(409, 'Solo se registra entrega para respuestas externas individuales o globales externos con responsable.');
     }
-    const [respuestas] = await c.execute(
-        `SELECT id FROM respuestas_radicado WHERE numero_radicado=? AND radicado_dependencia_id IS NULL${bloquear ? ' FOR UPDATE' : ''}`, [numero]);
+    const [respuestas] = await c.execute(esGlobalExterno
+        ? `SELECT rr.id FROM respuestas_radicado rr
+           JOIN radicado_dependencias rd ON rd.id = rr.radicado_dependencia_id
+           WHERE rr.numero_radicado=? AND rd.dependencia_id=?${bloquear ? ' FOR UPDATE' : ''}`
+        : `SELECT id FROM respuestas_radicado WHERE numero_radicado=? AND radicado_dependencia_id IS NULL${bloquear ? ' FOR UPDATE' : ''}`,
+    esGlobalExterno ? [numero, r.dependencia_responsable_id] : [numero]);
     if (!respuestas.length) throw fallo(404, 'No existe respuesta institucional para entregar.');
     return respuestas[0].id;
 }

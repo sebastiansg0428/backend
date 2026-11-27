@@ -26,6 +26,8 @@ test('PUT protege funcionario pendiente pero permite administrador, global y cie
     let pendiente = true;
     let global = false;
     let requiere = 1;
+    let tipoComunicacion = 'Interna';
+    let dependenciaResponsable = null;
     let estado = 'Recibido';
     let pasos = [];
     t.mock.method(pool, 'getConnection', async () => ({
@@ -38,10 +40,12 @@ test('PUT protege funcionario pendiente pero permite administrador, global y cie
             if (sql.includes('SELECT estado, destino_todas_dependencias')) {
                 assert.match(sql, /FOR UPDATE/);
                 return [[{ estado, destino_todas_dependencias: global ? 1 : 0,
-                    requiere_respuesta: requiere, dependencia_destino_id: 3, dependencia_destino: 'Oficina fixture' }]];
+                    requiere_respuesta: requiere, tipo_comunicacion: tipoComunicacion,
+                    dependencia_responsable_id: dependenciaResponsable,
+                    dependencia_destino_id: 3, dependencia_destino: 'Oficina fixture' }]];
             }
             if (sql.includes('SELECT rd.id, rd.estado')) return [[{ id: 7, estado,
-                dependencia_id: 3, dependencia_nombre: 'Oficina fixture' }]];
+                dependencia_id: usuario.dependencia_id, dependencia_nombre: 'Oficina fixture' }]];
             if (sql.includes('SELECT id FROM solicitudes_traslado')) {
                 assert.match(sql, /FOR UPDATE/);
                 assert.deepEqual(valores, ['RAD-FIXTURE']);
@@ -101,4 +105,25 @@ test('PUT protege funcionario pendiente pero permite administrador, global y cie
     assert.equal(estado, 'Enterado');
     assert.ok(pasos.some(sql => sql.includes('UPDATE solicitudes_traslado')));
     assert.ok(pasos.includes('commit'));
+
+    global = true;
+    tipoComunicacion = 'Externa';
+    requiere = 1;
+    dependenciaResponsable = 4;
+    estado = 'Recibido';
+    pendiente = false;
+    usuario.rol = 'funcionario';
+    usuario.dependencia_id = 3;
+    for (const nuevo of ['En trámite', 'Pendiente']) {
+        pasos = [];
+        const r = await pedir(nuevo);
+        assert.equal(r.status, 409);
+        assert.match((await r.json()).message, /no responsables.*Recibido.*Enterado/i);
+        assert.equal(pasos.some(sql => /UPDATE|INSERT/.test(sql.replaceAll('FOR UPDATE', ''))), false);
+    }
+    assert.equal((await pedir('Enterado')).status, 200);
+    assert.equal(estado, 'Enterado');
+    estado = 'Recibido';
+    usuario.dependencia_id = 4;
+    assert.equal((await pedir('Enterado')).status, 409);
 });

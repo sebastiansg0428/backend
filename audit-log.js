@@ -2,6 +2,7 @@ const EVENTOS_RADICADO = new Set([
     'radicado_creado',
     'radicado_asignado',
     'documentos_radicado_adjuntados',
+    'documento_original_abierto',
     'estado_cambiado',
     'respuesta_enviada',
     'documentos_respuesta_adjuntados',

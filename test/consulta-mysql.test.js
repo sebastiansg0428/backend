@@ -14,6 +14,7 @@ test('HTTP y MySQL aislados: paginas, permisos, PDFs, respuesta, Enterado y glob
     const entorno = await crearEntornoMysql(t, 'consulta');
     const pool = require('../db');
     entorno.registrarPool(pool);
+    await require('../migrations/031_responsable_global_externo').migrar(pool, { aplicar: true });
     const app = require('../server');
     const { crearSesion, revocarSesiones, hashPassword } = require('../auth');
     const { agregarDias, obtenerFechaLocal } = require('../semaforo');
@@ -86,15 +87,24 @@ test('HTTP y MySQL aislados: paginas, permisos, PDFs, respuesta, Enterado y glob
             [global, dependencia, indice === 0 ? 'Respondido' : 'Recibido', indice === 0 ? `${hoy} 09:00:00` : null]);
         asignaciones.push(resultado.insertId);
     }
+    await pool.execute(
+        'UPDATE radicados SET dependencia_responsable_id = ? WHERE numero_radicado = ?',
+        [dependencias[1], global]
+    );
     const pdf = await PDFDocument.create();
     pdf.addPage();
     const bytes = await pdf.save();
     const nombreArchivo = `${randomUUID()}.pdf`;
     const archivo = path.join(entorno.uploads, nombreArchivo);
     await fs.writeFile(archivo, bytes);
+    const globalNombreArchivo = `${randomUUID()}.pdf`;
+    await fs.writeFile(path.join(entorno.uploads, globalNombreArchivo), bytes);
     await pool.execute(
         `INSERT INTO documentos_radicado(numero_radicado, nombre_archivo, ruta_archivo, tipo_mime, tamano_bytes)
          VALUES (?, 'fixture.pdf', ?, 'application/pdf', ?)`, [numeros[2], nombreArchivo, bytes.length]);
+    await pool.execute(
+        `INSERT INTO documentos_radicado(numero_radicado, nombre_archivo, ruta_archivo, tipo_mime, tamano_bytes)
+         VALUES (?, 'global-fixture.pdf', ?, 'application/pdf', ?)`, [global, globalNombreArchivo, bytes.length]);
     const server = app.listen(0, '127.0.0.1');
     entorno.registrarServidor(server);
     await once(server, 'listening');
@@ -128,6 +138,23 @@ test('HTTP y MySQL aislados: paginas, permisos, PDFs, respuesta, Enterado y glob
     assert.equal(alertas.total, 3);
     assert.equal((await solicitar(2, `/uploads/${nombreArchivo}`)).status, 200);
     assert.equal((await solicitar(3, `/uploads/${nombreArchivo}`)).status, 404);
+    assert.equal((await solicitar(3, `/uploads/${globalNombreArchivo}`)).status, 200);
+    let historialPlaneacion = await (await solicitar(3, `/api/radicados/${global}/historial`)).json();
+    assert.equal(historialPlaneacion.historial.filter(e => e.event_type === 'documento_original_abierto').length, 1);
+    assert.equal(historialPlaneacion.historial.find(e => e.event_type === 'documento_original_abierto').radicado_dependencia_id, asignaciones[1]);
+    assert.equal((await solicitar(3, `/uploads/${globalNombreArchivo}`)).status, 200);
+    historialPlaneacion = await (await solicitar(3, `/api/radicados/${global}/historial`)).json();
+    assert.equal(historialPlaneacion.historial.filter(e => e.event_type === 'documento_original_abierto').length, 1);
+    assert.equal((await solicitar(2, `/uploads/${globalNombreArchivo}`)).status, 200);
+    const historialOtraDependencia = await (await solicitar(2, `/api/radicados/${global}/historial`)).json();
+    assert.equal(historialOtraDependencia.historial.filter(e => e.event_type === 'documento_original_abierto').length, 2);
+    const archivoAusente = `${randomUUID()}.pdf`;
+    await pool.execute(
+        `INSERT INTO documentos_radicado(numero_radicado, nombre_archivo, ruta_archivo, tipo_mime, tamano_bytes)
+         VALUES (?, 'global-ausente.pdf', ?, 'application/pdf', ?)`, [global, archivoAusente, bytes.length]);
+    assert.equal((await solicitar(3, `/uploads/${archivoAusente}`)).status, 404);
+    const historialTrasFallo = await (await solicitar(3, `/api/radicados/${global}/historial`)).json();
+    assert.equal(historialTrasFallo.historial.filter(e => e.event_type === 'documento_original_abierto').length, 2);
     const form = new FormData();
     form.append('contenido', 'Respuesta ficticia para validar la consulta.');
     form.append('archivos', new Blob([bytes], { type: 'application/pdf' }), 'respuesta-fixture.pdf');

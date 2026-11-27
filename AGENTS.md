@@ -134,6 +134,13 @@ opcionales y deben ejecutarse por separado con la variable `TEST_*_MYSQL`
 correspondiente, por ejemplo `TEST_INTEGRIDAD_MYSQL`, `TEST_CONSULTA_MYSQL`,
 `TEST_TRASLADOS_MYSQL` o `TEST_LOGIN_MYSQL`, siempre sobre una base aislada.
 
+Los scripts y migraciones no deben inicializar pools de base de datos al ser
+importados: deben cargar el pool solo al ejecutarse directamente o recibir una
+conexión/pool por inyección. Toda prueba que cree una base temporal, como
+`ventanilla_traslados_<id>`, debe comprobar explícitamente con `SELECT DATABASE()`
+que el pool apunta a esa base antes de escribir; nunca debe escribir en
+`ventanilla_unica`.
+
 Cuando una verificación frontend requiera Vite o Playwright, la clasificación
 de infraestructura debe conservar la evidencia concreta: `EACCES`, `EPERM`,
 `fetch failed`, puerto ocupado, servicio local no disponible o navegador no

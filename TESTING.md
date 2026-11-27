@@ -14,6 +14,11 @@ No uses una base productiva ni una base con datos reales para ejecutar pruebas.
 Las pruebas MySQL crean datos ficticios y deben ejecutarse contra una base
 aislada configurada para pruebas.
 
+Cada suite que cree una base temporal debe asignar `DB_NAME` y `UPLOAD_DIR`
+antes de cargar `db.js` o `server.js`, comprobar con `SELECT DATABASE()` que el
+pool apunta a la base temporal y eliminar esa base y sus archivos al finalizar.
+No se permite reutilizar el pool de `ventanilla_unica` para escribir fixtures.
+
 ## Comprobación inicial
 
 Desde la raíz del backend:

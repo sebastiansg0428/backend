@@ -2,6 +2,12 @@
 
 **Estado:** completed
 
+Relacionada con `032-entrega-final-externos.md`: un global interno informativo
+se agrupa como un solo radicado en las bandejas administrativas, pero conserva
+las 24 asignaciones y el cierre independiente `Recibido → Enterado`. Un global
+externo no usa este cierre: tiene una respuesta institucional única y una
+entrega final separada.
+
 ## Objetivo
 
 Cerrar un radicado de trámite informativo cuando la dependencia destinataria

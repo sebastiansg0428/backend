@@ -647,7 +647,11 @@ reintentos simultaneos, unicidad, rollback de auditoria y carreras contra
 respuesta/Enterado. Al terminar elimina exclusivamente esa base y sus PDFs.
 Requiere permisos locales de crear/eliminar esa base y crear triggers de prueba.
 No activar esta prueba junto a otras suites con aislamiento deshabilitado:
-el pool se configura para la base temporal antes de cargar la aplicacion.
+el pool se configura para la base temporal antes de cargar la aplicacion y la
+prueba verifica `SELECT DATABASE()` antes de insertar. La migración 031 se puede
+importar sin inicializar un pool; solo crea el pool al ejecutarse directamente.
+Esto evita que una importación temprana haga que Node reutilice el pool de
+`ventanilla_unica` durante una prueba temporal.
 
 ## Reintentos seguros de radicacion
 
@@ -942,6 +946,8 @@ asigna DB_NAME/UPLOAD_DIR antes de cargar servidor/pool y retira sus recursos.
 Integridad y traslados tambien generan bases nuevas; traslados construye
 deliberadamente el escenario sin 027 antes de ensayar su activacion, aunque
 el esquema fuente ya la tenga. Ninguna omision opt-in equivale a una prueba pasada.
+La prueba de traslados comprueba además el nombre de la base devuelto por el
+pool y aborta si no coincide con `ventanilla_traslados_<12 hex>`.
 
 En el frontend ejecutar `npm run test:react`, `npm run test:legacy`,
 `npm run test:visual` y `npm run build`. Las pruebas visuales pertenecen al
